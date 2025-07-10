@@ -55,10 +55,10 @@ public class ModuleController : ControllerBase
     {
         try
         {
-            var userId = User.Identity?.Name;
+            var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
             if (string.IsNullOrEmpty(userId))
             {
-                return Unauthorized();
+                return Unauthorized(new { error = "User not authenticated" });
             }
             
             // Ensure default modules exist in database
@@ -225,33 +225,22 @@ public class ModuleController : ControllerBase
             // Ensure user exists in database before creating subscription
             await EnsureUserExistsAsync(userId);
 
-            // Map frontend module IDs to backend module IDs
-            var moduleIdMapping = new Dictionary<string, string>
-            {
-                { "email", "EmailMcp" },
-                { "calendar", "CalendarMcp" },
-                { "chatgpt", "chatgpt" },
-                { "EmailMcp", "EmailMcp" },
-                { "CalendarMcp", "CalendarMcp" },
-                { "ChatGptMcp", "chatgpt" }
-            };
-
-            if (!moduleIdMapping.ContainsKey(request.ModuleId))
+            // Validate module ID
+            var validModuleIds = new[] { "email", "calendar", "chatgpt" };
+            if (!validModuleIds.Contains(request.ModuleId))
             {
                 return BadRequest(new { error = "Invalid module ID" });
             }
 
-            var backendModuleId = moduleIdMapping[request.ModuleId];
-            
             // Check if the module is enabled in configuration
-            var isEnabled = _configuration.GetValue<bool>($"McpModules:{backendModuleId}:Enabled", true);
+            var isEnabled = _configuration.GetValue<bool>($"McpModules:{request.ModuleId}:Enabled", true);
             if (!isEnabled)
             {
                 return BadRequest(new { error = "Module is disabled in configuration" });
             }
 
-            // Use the backend module ID for database operations
-            var subscription = await _subscriptionRepository.UpsertSubscriptionAsync(userId, backendModuleId, request.IsSubscribed);
+            // Use the module ID directly for database operations
+            var subscription = await _subscriptionRepository.UpsertSubscriptionAsync(userId, request.ModuleId, request.IsSubscribed);
 
             _logger.LogInformation($"User {userId} {(request.IsSubscribed ? "subscribed to" : "unsubscribed from")} module {request.ModuleId}");
 
@@ -346,9 +335,6 @@ public class ModuleController : ControllerBase
             "email" => "Email Management",
             "calendar" => "Calendar Integration",
             "chatgpt" => "General AI Assistant",
-            "EmailMcp" => "Email Management",
-            "CalendarMcp" => "Calendar Integration",
-            "ChatGptMcp" => "General AI Assistant",
             _ => moduleId
         };
     }
@@ -360,9 +346,6 @@ public class ModuleController : ControllerBase
             "email" => "Manage emails, send messages, and check inbox",
             "calendar" => "Schedule meetings, check calendar, and manage events",
             "chatgpt" => "General AI assistance for questions and conversations",
-            "EmailMcp" => "Manage emails, send messages, and check inbox",
-            "CalendarMcp" => "Schedule meetings, check calendar, and manage events",
-            "ChatGptMcp" => "General AI assistance for questions and conversations",
             _ => "MCP Module"
         };
     }
@@ -374,9 +357,6 @@ public class ModuleController : ControllerBase
             "email" => "1.0.0",
             "calendar" => "1.0.0",
             "chatgpt" => "1.0.0",
-            "EmailMcp" => "1.0.0",
-            "CalendarMcp" => "1.0.0",
-            "ChatGptMcp" => "1.0.0",
             _ => "1.0.0"
         };
     }

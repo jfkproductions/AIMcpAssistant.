@@ -85,7 +85,7 @@ public class ModuleRepository
     
     public async Task RemoveOrphanedModulesAsync()
     {
-        var defaultModuleIds = new[] { "EmailMcp", "CalendarMcp", "chatgpt" };
+        var defaultModuleIds = new[] { "email", "calendar", "chatgpt" };
         var orphanedModules = await _context.Modules
             .Where(m => !defaultModuleIds.Contains(m.ModuleId))
             .ToListAsync();
@@ -101,8 +101,8 @@ public class ModuleRepository
     {
         var defaultModules = new[]
         {
-            new { Id = "EmailMcp", Name = "Email Management", Description = "Manage emails, send messages, and check inbox", Version = "1.0.0" },
-            new { Id = "CalendarMcp", Name = "Calendar Integration", Description = "Schedule meetings, check calendar, and manage events", Version = "1.0.0" },
+            new { Id = "email", Name = "Email Management", Description = "Manage emails, send messages, and check inbox", Version = "1.0.0" },
+            new { Id = "calendar", Name = "Calendar Integration", Description = "Schedule meetings, check calendar, and manage events", Version = "1.0.0" },
             new { Id = "chatgpt", Name = "General AI Assistant", Description = "General AI assistance for questions and conversations", Version = "1.0.0" }
         };
 

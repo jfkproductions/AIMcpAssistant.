@@ -31,7 +31,21 @@ public class CommandController : ControllerBase
             }
 
             var userContext = CreateUserContext();
-            var response = await _commandDispatcher.ProcessCommandAsync(request.Input, userContext, request.PreferredModule);
+
+            // Get last used module from session if no preferred module is specified
+            var preferredModule = request.PreferredModule;
+            if (string.IsNullOrEmpty(preferredModule))
+            {
+                preferredModule = HttpContext.Session.GetString("LastUsedModuleId");
+            }
+
+            var response = await _commandDispatcher.ProcessCommandAsync(request.Input, userContext, preferredModule);
+
+            // Store the module ID in the session for context
+            if (response.Success && response.Metadata.TryGetValue("moduleId", out var moduleId))
+            {
+                HttpContext.Session.SetString("LastUsedModuleId", moduleId.ToString());
+            }
 
             return Ok(new
             {

@@ -1,18 +1,24 @@
 using AIMcpAssistant.Core.Interfaces;
 using AIMcpAssistant.Core.Models;
 using Microsoft.Extensions.Logging;
+using AIMcpAssistant.Data.Interfaces;
+using AIMcpAssistant.Data.Entities;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace AIMcpAssistant.Core.Services;
 
 public class CommandDispatcher : ICommandDispatcher
 {
     private readonly ILogger<CommandDispatcher> _logger;
+    private readonly IServiceProvider _serviceProvider;
     private readonly List<IMcpModule> _modules = new();
     private readonly object _lock = new();
 
-    public CommandDispatcher(ILogger<CommandDispatcher> logger)
+    public CommandDispatcher(ILogger<CommandDispatcher> logger, IServiceProvider serviceProvider)
     {
         _logger = logger;
+        _serviceProvider = serviceProvider;
+        _logger.LogInformation("CommandDispatcher created");
     }
 
     public async Task<McpResponse> ProcessCommandAsync(string input, UserContext context)
@@ -29,6 +35,19 @@ public class CommandDispatcher : ICommandDispatcher
             IMcpModule? module = null;
             double confidence = 0.0;
             
+            // If no preferred module is specified, try to get it from history
+            if (string.IsNullOrEmpty(preferredModuleId))
+            {
+                using var scope = _serviceProvider.CreateScope();
+                var commandHistoryRepository = scope.ServiceProvider.GetRequiredService<ICommandHistoryRepository>();
+                var lastCommand = (await commandHistoryRepository.GetUserHistoryAsync(context.UserId, 1)).FirstOrDefault();
+                if (lastCommand != null && (DateTime.UtcNow - lastCommand.ExecutedAt).TotalMinutes < 5)
+                {
+                    preferredModuleId = lastCommand.ModuleId;
+                    _logger.LogInformation("Using last used module from history: {ModuleId}", preferredModuleId);
+                }
+            }
+
             // If a preferred module is specified, try to use it first
             if (!string.IsNullOrEmpty(preferredModuleId))
             {
@@ -103,11 +122,40 @@ public class CommandDispatcher : ICommandDispatcher
 
             try
             {
-                var response = await module.HandleCommandAsync(input, context);
-                
-                // Check if the module failed to handle the command properly
-                if (!response.Success && ShouldFallbackToChatGpt(response))
-                {
+                var startTime = DateTime.UtcNow;
+            McpResponse response;
+            try
+            {
+                response = await module.HandleCommandAsync(input, context);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error executing command in module {ModuleId}", module.Id);
+                response = McpResponse.CreateError("An unexpected error occurred in the module.", "MODULE_EXECUTION_ERROR");
+            }
+            var executionDuration = DateTime.UtcNow - startTime;
+
+            // Log command to history
+            var historyEntry = new CommandHistory
+            {
+                UserId = context.UserId,
+                Provider = context.Provider,
+                Command = input,
+                ModuleId = module.Id,
+                ModuleName = module.Name,
+                IsSuccess = response.Success,
+                Response = response.Message, // Or a serialized version of response.Data
+                ErrorMessage = response.Success ? null : response.Message,
+                ExecutedAt = startTime,
+                ExecutionDuration = executionDuration
+            };
+            using var scope = _serviceProvider.CreateScope();
+            var commandHistoryRepository = scope.ServiceProvider.GetRequiredService<ICommandHistoryRepository>();
+            await commandHistoryRepository.AddAsync(historyEntry);
+
+            // Check if the module failed to handle the command properly
+            if (!response.Success && ShouldFallbackToChatGpt(response))
+            {
                     _logger.LogInformation("Module {ModuleId} failed to handle command, attempting fallback to ChatGPT", module.Id);
                     
                     var chatGptModule = GetChatGptModule();
@@ -179,6 +227,7 @@ public class CommandDispatcher : ICommandDispatcher
         await Task.CompletedTask;
         lock (_lock)
         {
+            _logger.LogInformation("Returning {ModuleCount} registered modules", _modules.Count);
             return new List<IMcpModule>(_modules);
         }
     }

@@ -111,17 +111,49 @@ public class CalendarMcp : BaseMcpModule
         try
         {
             var timeRange = ExtractTimeRange(input);
-            
+            var readDescriptions = input.Contains("description") || input.Contains("details");
+
+            McpResponse response;
             if (context.Provider.Equals("Google", StringComparison.OrdinalIgnoreCase))
             {
-                return await ViewGoogleCalendarAsync(context, timeRange.start, timeRange.end);
+                response = await ViewGoogleCalendarAsync(context, timeRange.start, timeRange.end);
             }
             else if (context.Provider.Equals("Microsoft", StringComparison.OrdinalIgnoreCase))
             {
-                return await ViewOutlookCalendarAsync(context, timeRange.start, timeRange.end);
+                response = await ViewOutlookCalendarAsync(context, timeRange.start, timeRange.end);
             }
-            
-            return Error("Unsupported calendar provider. Please use Google or Microsoft account.");
+            else
+            {
+                return Error("Unsupported calendar provider. Please use Google or Microsoft account.");
+            }
+
+            if (!response.Success || response.Data == null)
+                return response;
+
+            var data = (dynamic)response.Data;
+            if (data.Count == 0)
+            {
+                return response; // Return the "No events found" message from the original call
+            }
+
+            if (readDescriptions)
+            {
+                var builder = new System.Text.StringBuilder();
+                builder.AppendLine($"Here are the details for your {data.Count} event(s):");
+                foreach (var evt in data.Events)
+                {
+                    builder.AppendLine($"- Event: {evt.Summary}, starting {evt.Start}.");
+                    if (!string.IsNullOrWhiteSpace(evt.Description))
+                    {
+                        var desc = evt.Description.Length > 100 ? evt.Description.Substring(0, 100) + "..." : evt.Description;
+                        builder.AppendLine($"  Description: {desc}");
+                    }
+                }
+                return Success(builder.ToString().Trim(), response.Data);
+            }
+
+            // Return original summary response if details are not requested
+            return response;
         }
         catch (Exception ex)
         {

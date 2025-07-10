@@ -16,6 +16,8 @@ namespace AIMcpAssistant.MCPs;
 
 public class EmailMcp : BaseMcpModule
 {
+    private readonly Dictionary<string, McpResponse> _lastResponse = new();
+    private readonly Dictionary<string, dynamic> _lastEmailContext = new();
     public override string Id => "email";
     public override string Name => "Email Manager";
     public override string Description => "Manage emails from Google Gmail and Microsoft Outlook";
@@ -34,9 +36,24 @@ public class EmailMcp : BaseMcpModule
 
     public EmailMcp(ILogger<EmailMcp> logger) : base(logger) { }
 
-    public override async Task<double> CanHandleAsync(string input, UserContext context)
+        public override async Task<double> CanHandleAsync(string input, UserContext context)
     {
+        if (_lastResponse.ContainsKey(context.UserId))
+        {
+            return 1.0; // High confidence for follow-up commands
+        }
+        
         var normalizedInput = input.ToLowerInvariant().Trim();
+        
+        // High confidence for follow-up commands when we have email context
+        if (_lastEmailContext.ContainsKey(context.UserId))
+        {
+            var followUpKeywords = new[] { "reply", "respond", "delete", "spam", "junk", "next email", "read next" };
+            if (followUpKeywords.Any(keyword => normalizedInput.Contains(keyword)))
+            {
+                return 0.95;
+            }
+        }
         
         // Only handle if input explicitly contains email-related keywords
         var emailKeywords = new[] { "email", "emails", "inbox", "message", "messages", "mail", "gmail", "outlook" };
@@ -67,15 +84,88 @@ public class EmailMcp : BaseMcpModule
         return 0.0;
     }
 
-    public override async Task<McpResponse> HandleCommandAsync(string input, UserContext context)
+        public override async Task<McpResponse> HandleCommandAsync(string input, UserContext context)
     {
+        if (_lastResponse.TryGetValue(context.UserId, out var lastResponse))
+        {
+            // Clear the last response to avoid re-processing
+            _lastResponse.Remove(context.UserId);
+
+            if (lastResponse.Message.Contains("Would you like me to read the subjects?"))
+             {
+                 var normalizedInput = input.ToLowerInvariant().Trim();
+                 if (normalizedInput.Contains("yes") || normalizedInput.Contains("read") || normalizedInput.Contains("subject"))
+                 {
+                     try
+                     {
+                         var responseData = lastResponse.Data as dynamic;
+                         if (responseData != null)
+                         {
+                             var emails = responseData.Emails;
+                             var subjectsList = new List<string>();
+                             
+                             foreach (var email in emails)
+                             {
+                                 subjectsList.Add($"• {email.Subject}");
+                             }
+                             
+                             var subjectsText = string.Join("\n", subjectsList);
+                             return Success($"Here are the subjects of the latest {subjectsList.Count} emails:\n\n{subjectsText}");
+                         }
+                     }
+                     catch (Exception ex)
+                     {
+                         LogError(ex, "Error extracting email subjects from stored response");
+                         return Error("Sorry, I had trouble accessing the email subjects. Please try asking for your emails again.");
+                     }
+                 }
+                 else if (normalizedInput.Contains("no"))
+                 {
+                     return Success("Okay, I won't read the subjects. What would you like to do next?");
+                 }
+                 else
+                 {
+                     return Success("I'm not sure what you'd like me to do. Please say 'yes' to read the subjects or 'no' to skip.");
+                 }
+             }
+        }
         try
         {
             var normalizedInput = input.ToLowerInvariant().Trim();
             
+            // Check for follow-up commands when we have email context
+            if (_lastEmailContext.ContainsKey(context.UserId))
+            {
+                if (normalizedInput.Contains("reply") || normalizedInput.Contains("respond"))
+                {
+                    return await HandleReplyToLastEmailAsync(normalizedInput, context);
+                }
+                if (normalizedInput.Contains("delete") && (normalizedInput.Contains("this") || normalizedInput.Contains("last") || normalizedInput.Contains("email")))
+                {
+                    return await HandleDeleteLastEmailAsync(normalizedInput, context);
+                }
+                if (normalizedInput.Contains("spam") || normalizedInput.Contains("junk"))
+                {
+                    return await HandleMoveToSpamAsync(normalizedInput, context);
+                }
+                if (normalizedInput.Contains("next email") || normalizedInput.Contains("read next"))
+                {
+                    return await HandleReadNextEmailAsync(normalizedInput, context);
+                }
+            }
+            
             // Parse command intent
             if (IsReadCommand(normalizedInput))
+            {
+                // Check if user wants to read a specific email or just list emails
+                if (normalizedInput.Contains("last email") || normalizedInput.Contains("read the last") || 
+                    normalizedInput.Contains("read my last") || normalizedInput.Contains("read email content") || 
+                    normalizedInput.Contains("full email") || normalizedInput.Contains("latest email"))
+                {
+                    return await HandleReadSpecificEmailAsync(normalizedInput, context);
+                }
                 return await HandleReadEmailsAsync(normalizedInput, context);
+            }
             
             if (IsDeleteCommand(normalizedInput))
                 return await HandleDeleteEmailAsync(normalizedInput, context);
@@ -89,8 +179,15 @@ public class EmailMcp : BaseMcpModule
             if (IsMarkCommand(normalizedInput))
                 return await HandleMarkEmailAsync(normalizedInput, context);
             
-            if (IsSearchCommand(normalizedInput))
+                        if (IsSearchCommand(normalizedInput))
                 return await HandleSearchEmailsAsync(normalizedInput, context);
+
+            // If we are in a follow-up context, but the input doesn't match, we should let the user know.
+            if (_lastResponse.ContainsKey(context.UserId))
+            {
+                _lastResponse.Remove(context.UserId);
+                return Error("I'm not sure how to handle that response. Please try your command again.");
+            }
 
             return Error("I understand you want to work with emails, but I'm not sure what specific action you'd like to take. Try 'read my emails' or 'send an email'.");
         }
@@ -106,17 +203,32 @@ public class EmailMcp : BaseMcpModule
         try
         {
             var count = ExtractNumberFromInput(input, 5); // Default to 5 emails
+            var onlyUnread = input.Contains("unread");
             
+            (int totalCount, int totalUnreadCount) = await GetTotalAndUnreadCountAsync(context);
+
+            if (totalCount == 0)
+            {
+                return Success("Your inbox is empty.");
+            }
+
+            var emails = new List<dynamic>();
             if (context.Provider.Equals("Google", StringComparison.OrdinalIgnoreCase))
             {
-                return await ReadGmailEmailsAsync(context, count);
+                var gmailResponse = await ReadGmailEmailsAsync(context, count, onlyUnread);
+                if (gmailResponse.Data is not null) emails = ((dynamic)gmailResponse.Data).Emails;
             }
             else if (context.Provider.Equals("Microsoft", StringComparison.OrdinalIgnoreCase))
             {
-                return await ReadOutlookEmailsAsync(context, count);
+                var outlookResponse = await ReadOutlookEmailsAsync(context, count, onlyUnread);
+                if (outlookResponse.Data is not null) emails = ((dynamic)outlookResponse.Data).Emails;
             }
+
+                        var responseMessage = $"You have {totalCount} emails in your inbox, with {totalUnreadCount} unread. I have loaded the latest {emails.Count} emails. Would you like me to read the subjects?";
             
-            return Error("Unsupported email provider. Please use Google or Microsoft account.");
+            var response = Success(responseMessage, new { Emails = emails, TotalCount = totalCount, UnreadCount = totalUnreadCount });
+            _lastResponse[context.UserId] = response;
+            return response;
         }
         catch (Exception ex)
         {
@@ -125,7 +237,222 @@ public class EmailMcp : BaseMcpModule
         }
     }
 
-    private async Task<McpResponse> ReadGmailEmailsAsync(UserContext context, int count)
+    private async Task<(int totalCount, int totalUnreadCount)> GetTotalAndUnreadCountAsync(UserContext context)
+    {
+        if (context.Provider.Equals("Google", StringComparison.OrdinalIgnoreCase))
+        {
+            var credential = GoogleCredential.FromAccessToken(context.AccessToken);
+            var service = new GmailService(new BaseClientService.Initializer() { HttpClientInitializer = credential });
+            var profile = await service.Users.GetProfile("me").ExecuteAsync();
+            var labels = await service.Users.Labels.Get("me", "INBOX").ExecuteAsync();
+            return (labels.MessagesTotal ?? 0, labels.MessagesUnread ?? 0);
+        }
+        else if (context.Provider.Equals("Microsoft", StringComparison.OrdinalIgnoreCase))
+        {
+            var graphClient = GetGraphServiceClient(context.AccessToken);
+            var inbox = await graphClient.Me.MailFolders["Inbox"].GetAsync();
+            return (inbox.TotalItemCount ?? 0, inbox.UnreadItemCount ?? 0);
+        }
+        return (0, 0);
+    }
+
+    private async Task<McpResponse> HandleReadSpecificEmailAsync(string input, UserContext context)
+    {
+        try
+        {
+            McpResponse response;
+            if (context.Provider.Equals("Google", StringComparison.OrdinalIgnoreCase))
+            {
+                response = await ReadLatestGmailContentAsync(context);
+            }
+            else if (context.Provider.Equals("Microsoft", StringComparison.OrdinalIgnoreCase))
+            {
+                response = await ReadLatestOutlookContentAsync(context);
+            }
+            else
+            {
+                return Error("Email provider not supported.");
+            }
+            
+            // Store the email context for follow-up commands
+            if (response.IsSuccess && response.Data != null)
+            {
+                _lastEmailContext[context.UserId] = response.Data;
+                
+                // Enhance the response with follow-up options
+                var enhancedMessage = response.Message + "\n\nWhat would you like to do next? You can:\n• Reply to this email\n• Delete this email\n• Move to spam\n• Read next email";
+                return Success(enhancedMessage, response.Data);
+            }
+            
+            return response;
+        }
+        catch (Exception ex)
+        {
+            LogError(ex, "Error reading specific email");
+            return Error("Failed to read email content. Please check your authentication.");
+        }
+    }
+
+    private async Task<McpResponse> ReadLatestGmailContentAsync(UserContext context)
+    {
+        var credential = GoogleCredential.FromAccessToken(context.AccessToken);
+        var service = new GmailService(new BaseClientService.Initializer()
+        {
+            HttpClientInitializer = credential
+        });
+
+        var request = service.Users.Messages.List("me");
+        request.MaxResults = 1;
+        request.Q = "in:inbox";
+        
+        var response = await request.ExecuteAsync();
+        
+        if (response.Messages == null || !response.Messages.Any())
+        {
+            return Success("Your inbox is empty.");
+        }
+
+        var messageId = response.Messages.First().Id;
+        var fullMessage = await service.Users.Messages.Get("me", messageId).ExecuteAsync();
+        
+        var subject = GetHeaderValue(fullMessage.Payload.Headers, "Subject") ?? "(No Subject)";
+        var from = GetHeaderValue(fullMessage.Payload.Headers, "From") ?? "Unknown Sender";
+        var date = GetHeaderValue(fullMessage.Payload.Headers, "Date") ?? "Unknown Date";
+        
+        var emailContent = ExtractEmailContent(fullMessage.Payload);
+        var content = !string.IsNullOrEmpty(emailContent.text) ? emailContent.text : fullMessage.Snippet ?? "No content available";
+        
+        var emailDetails = $"**Subject:** {subject}\n**From:** {from}\n**Date:** {date}\n\n**Content:**\n{content}";
+        
+        var emailData = new
+        {
+            MessageId = messageId,
+            Subject = subject,
+            From = from,
+            Date = date,
+            Content = content,
+            Provider = "Google"
+        };
+        
+        return Success(emailDetails, emailData);
+    }
+
+    private async Task<McpResponse> ReadLatestOutlookContentAsync(UserContext context)
+    {
+        var graphClient = GetGraphServiceClient(context.AccessToken);
+
+        var messages = await graphClient.Me.Messages
+            .GetAsync(requestConfiguration =>
+            {
+                requestConfiguration.QueryParameters.Top = 1;
+                requestConfiguration.QueryParameters.Orderby = new[] { "receivedDateTime desc" };
+            });
+
+        if (messages?.Value == null || !messages.Value.Any())
+        {
+            return Success("Your inbox is empty.");
+        }
+
+        var message = messages.Value.First();
+        var subject = message.Subject ?? "(No Subject)";
+        var from = message.From?.EmailAddress?.Address ?? "Unknown Sender";
+        var date = message.ReceivedDateTime?.ToString("yyyy-MM-dd HH:mm") ?? "Unknown Date";
+        var content = message.Body?.Content ?? message.BodyPreview ?? "No content available";
+        
+        var emailDetails = $"**Subject:** {subject}\n**From:** {from}\n**Date:** {date}\n\n**Content:**\n{content}";
+        
+        var emailData = new
+        {
+            MessageId = message.Id,
+            Subject = subject,
+            From = from,
+            Date = date,
+            Content = content,
+            Provider = "Microsoft"
+        };
+        
+        return Success(emailDetails, emailData);
+    }
+
+    private EmailContent ExtractEmailContent(MessagePart messagePart)
+    {
+        var textContent = "";
+        var htmlContent = "";
+
+        if (messagePart.Body != null && !string.IsNullOrEmpty(messagePart.Body.Data))
+        {
+            var content = Encoding.UTF8.GetString(Convert.FromBase64String(messagePart.Body.Data.Replace('-', '+').Replace('_', '/')));
+            
+            if (messagePart.MimeType == "text/plain")
+            {
+                textContent = content;
+            }
+            else if (messagePart.MimeType == "text/html")
+            {
+                htmlContent = content;
+            }
+        }
+
+        if (messagePart.Parts != null)
+        {
+            foreach (var part in messagePart.Parts)
+            {
+                var partContent = ExtractEmailContent(part);
+                if (!string.IsNullOrEmpty(partContent.text)) textContent += partContent.text;
+                if (!string.IsNullOrEmpty(partContent.html)) htmlContent += partContent.html;
+            }
+        }
+
+        return new EmailContent { text = textContent, html = htmlContent };
+    }
+
+    private class EmailContent
+    {
+        public string text { get; set; } = "";
+        public string html { get; set; } = "";
+    }
+
+    private async Task<McpResponse> HandleReplyToLastEmailAsync(string input, UserContext context)
+    {
+        if (!_lastEmailContext.TryGetValue(context.UserId, out var emailData))
+        {
+            return Error("No email context found. Please read an email first.");
+        }
+
+        var emailInfo = (dynamic)emailData;
+        return Success($"I'll help you reply to the email '{emailInfo.Subject}' from {emailInfo.From}. What would you like to say in your reply?");
+    }
+
+    private async Task<McpResponse> HandleDeleteLastEmailAsync(string input, UserContext context)
+    {
+        if (!_lastEmailContext.TryGetValue(context.UserId, out var emailData))
+        {
+            return Error("No email context found. Please read an email first.");
+        }
+
+        var emailInfo = (dynamic)emailData;
+        return Success($"Are you sure you want to delete the email '{emailInfo.Subject}' from {emailInfo.From}? Reply 'yes' to confirm or 'no' to cancel.");
+    }
+
+    private async Task<McpResponse> HandleMoveToSpamAsync(string input, UserContext context)
+    {
+        if (!_lastEmailContext.TryGetValue(context.UserId, out var emailData))
+        {
+            return Error("No email context found. Please read an email first.");
+        }
+
+        var emailInfo = (dynamic)emailData;
+        return Success($"Are you sure you want to move the email '{emailInfo.Subject}' from {emailInfo.From} to spam? Reply 'yes' to confirm or 'no' to cancel.");
+    }
+
+    private async Task<McpResponse> HandleReadNextEmailAsync(string input, UserContext context)
+    {
+        // Clear the current email context and read the next email
+        _lastEmailContext.Remove(context.UserId);
+        return await HandleReadSpecificEmailAsync("read next email", context);
+    }
+
+    private async Task<McpResponse> ReadGmailEmailsAsync(UserContext context, int count, bool onlyUnread)
     {
         var credential = GoogleCredential.FromAccessToken(context.AccessToken);
         var service = new GmailService(new BaseClientService.Initializer()
@@ -135,13 +462,13 @@ public class EmailMcp : BaseMcpModule
 
         var request = service.Users.Messages.List("me");
         request.MaxResults = count;
-        request.Q = "in:inbox";
+        request.Q = onlyUnread ? "in:inbox is:unread" : "in:inbox";
         
         var response = await request.ExecuteAsync();
         
         if (response.Messages == null || !response.Messages.Any())
         {
-            return Success("Your inbox is empty.");
+            return Success(onlyUnread ? "You have no unread emails." : "Your inbox is empty.");
         }
 
         var emails = new List<object>();
@@ -166,34 +493,27 @@ public class EmailMcp : BaseMcpModule
             });
         }
 
-        var unreadCount = emails.Count(e => ((dynamic)e).IsUnread);
-        var resultMessage = $"You have {emails.Count} emails in your inbox";
-        if (unreadCount > 0)
-        {
-            resultMessage += $", {unreadCount} unread";
-        }
-        resultMessage += ".";
-
-        return Success(resultMessage, new { Emails = emails, TotalCount = emails.Count, UnreadCount = unreadCount });
+        return Success("", new { Emails = emails });
     }
 
-    private async Task<McpResponse> ReadOutlookEmailsAsync(UserContext context, int count)
+    private async Task<McpResponse> ReadOutlookEmailsAsync(UserContext context, int count, bool onlyUnread)
     {
-        var httpClient = new HttpClient();
-        httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", context.AccessToken);
-        var graphClient = new GraphServiceClient(httpClient);
+        var graphClient = GetGraphServiceClient(context.AccessToken);
 
         var messages = await graphClient.Me.Messages
             .GetAsync(requestConfiguration =>
             {
                 requestConfiguration.QueryParameters.Top = count;
-                requestConfiguration.QueryParameters.Filter = "isRead eq false or isRead eq true";
+                if (onlyUnread)
+                {
+                    requestConfiguration.QueryParameters.Filter = "isRead eq false";
+                }
                 requestConfiguration.QueryParameters.Orderby = new[] { "receivedDateTime desc" };
             });
 
         if (messages?.Value == null || !messages.Value.Any())
         {
-            return Success("Your inbox is empty.");
+            return Success(onlyUnread ? "You have no unread emails." : "Your inbox is empty.");
         }
 
         var emails = messages.Value.Select(msg => new
@@ -206,15 +526,14 @@ public class EmailMcp : BaseMcpModule
             IsUnread = !(msg.IsRead ?? true)
         }).ToList();
 
-        var unreadCount = emails.Count(e => e.IsUnread);
-        var message = $"You have {emails.Count} emails in your inbox";
-        if (unreadCount > 0)
-        {
-            message += $", {unreadCount} unread";
-        }
-        message += ".";
+        return Success("", new { Emails = emails });
+    }
 
-        return Success(message, new { Emails = emails, TotalCount = emails.Count, UnreadCount = unreadCount });
+    private GraphServiceClient GetGraphServiceClient(string accessToken)
+    {
+        var httpClient = new HttpClient();
+        httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
+        return new GraphServiceClient(httpClient);
     }
 
     private async Task<McpResponse> HandleDeleteEmailAsync(string input, UserContext context)
@@ -440,14 +759,14 @@ public class EmailMcp : BaseMcpModule
                     if (emailData?.Emails != null)
                     {
                         var emails = emailData.Emails as IEnumerable<dynamic>;
-                        var currentEmailIds = emails.Select(e => (string)e.Id).ToHashSet();
+                        var currentEmailIds = emails?.Select(e => (string)e.Id).ToHashSet() ?? new HashSet<string>();
                         
                         // Find new emails
                         var newEmailIds = currentEmailIds.Except(lastEmailIds);
                         
                         foreach (var emailId in newEmailIds)
                         {
-                            var email = emails.FirstOrDefault(e => (string)e.Id == emailId);
+                            var email = emails?.FirstOrDefault(e => (string)e.Id == emailId);
                             if (email != null)
                             {
                                 updates.Add(new McpUpdate

@@ -112,9 +112,20 @@ const Dashboard: React.FC = () => {
       if (subscriptionsResponse.data.subscriptions) {
         subscriptionsResponse.data.subscriptions.forEach((sub: any) => {
           if (mergedSettings[sub.moduleId]) {
+            // Update existing module settings with subscription status
             mergedSettings[sub.moduleId] = {
               ...mergedSettings[sub.moduleId],
               isSubscribed: sub.isSubscribed
+            };
+          } else {
+            // Create module settings for subscribed modules not in backend settings
+            mergedSettings[sub.moduleId] = {
+              enabled: true,
+              registered: true,
+              isSubscribed: sub.isSubscribed,
+              name: sub.moduleName || sub.moduleId,
+              description: `${sub.moduleName || sub.moduleId} module`,
+              version: '1.0.0'
             };
           }
         });
@@ -192,13 +203,11 @@ const Dashboard: React.FC = () => {
     
     // Fallback to basic icons based on module type
     switch (moduleId.toLowerCase()) {
-      case 'emailmcp':
+     
       case 'email':
         return '📧';
-      case 'calendarmcp':
-      case 'calendar':
+       case 'calendar':
         return '📅';
-      case 'chatgptmcp':
       case 'chatgpt':
       case 'general':
         return '🤖';
@@ -222,17 +231,14 @@ const Dashboard: React.FC = () => {
     } else {
       // Fallback to basic colors based on module type
       switch (moduleId.toLowerCase()) {
-        case 'emailmcp':
         case 'email':
           baseStyle.background = 'rgba(59, 130, 246, 0.2)';
           baseStyle.border = '1px solid rgba(59, 130, 246, 0.3)';
           break;
-        case 'calendarmcp':
         case 'calendar':
           baseStyle.background = 'rgba(34, 197, 94, 0.2)';
           baseStyle.border = '1px solid rgba(34, 197, 94, 0.3)';
           break;
-        case 'chatgptmcp':
         case 'chatgpt':
         case 'general':
           baseStyle.background = 'rgba(147, 51, 234, 0.2)';

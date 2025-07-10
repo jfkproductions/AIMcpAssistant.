@@ -34,4 +34,12 @@ public class UserRepository : Repository<User>, IUserRepository
             await UpdateAsync(user);
         }
     }
+
+    public async Task<IEnumerable<User>> GetUsersWithActiveEmailSubscriptionsAsync()
+    {
+        return await _dbSet
+            .Include(u => u.ModuleSubscriptions)
+            .Where(u => u.ModuleSubscriptions.Any(s => s.ModuleId == "email" && s.IsSubscribed))
+            .ToListAsync();
+    }
 }

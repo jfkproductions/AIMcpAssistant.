@@ -62,17 +62,5 @@ public class UserModuleSubscriptionRepository
         await _context.SaveChangesAsync();
     }
     
-    public async Task CleanupOrphanedSubscriptionsAsync()
-    {
-        var validModuleIds = new[] { "EmailMcp", "CalendarMcp", "chatgpt" };
-        var orphanedSubscriptions = await _context.UserModuleSubscriptions
-            .Where(s => !validModuleIds.Contains(s.ModuleId))
-            .ToListAsync();
-            
-        if (orphanedSubscriptions.Any())
-        {
-            _context.UserModuleSubscriptions.RemoveRange(orphanedSubscriptions);
-            await _context.SaveChangesAsync();
-        }
-    }
+
 }

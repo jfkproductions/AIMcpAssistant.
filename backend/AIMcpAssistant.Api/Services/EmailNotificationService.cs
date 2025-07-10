@@ -57,31 +57,36 @@ public class EmailNotificationService : BackgroundService
     {
         using var scope = _serviceProvider.CreateScope();
         var userRepository = scope.ServiceProvider.GetRequiredService<IUserRepository>();
-        var subscriptionRepository = scope.ServiceProvider.GetRequiredService<UserModuleSubscriptionRepository>();
+        var emailMcp = scope.ServiceProvider.GetRequiredService<EmailMcp>();
 
         try
         {
-            // Get all active users
-            var activeUsers = await userRepository.GetActiveUsersAsync();
-            
-            foreach (var user in activeUsers)
+            var usersToNotify = await userRepository.GetUsersWithActiveEmailSubscriptionsAsync();
+
+            foreach (var user in usersToNotify)
             {
-                // Check if user is subscribed to EmailMcp
-                var userSubscriptions = await subscriptionRepository.GetUserSubscriptionsAsync(user.UserId);
-                var emailSubscription = userSubscriptions.FirstOrDefault(s => s.ModuleId == "EmailMcp");
-                
-                // Only send notifications to subscribed users (default to subscribed if no record exists)
-                var isSubscribed = emailSubscription?.IsSubscribed ?? true;
-                
-                if (isSubscribed)
+                var userContext = new UserContext
                 {
-                    // For now, we'll use the EmailMcp's GetUpdatesAsync method which handles notifications internally
-                    // This is a temporary solution until we can properly access user tokens
-                    _logger.LogDebug("Email notifications are handled by EmailMcp GetUpdatesAsync method for user {UserId}", user.UserId);
-                }
-                else
+                    UserId = user.UserId,
+                    Provider = user.Provider,
+                    // Note: We need to get the tokens from somewhere else, as they're not stored in the User entity
+                    // This is a security measure - tokens should not be stored in the database
+                    // For now, we'll skip token-based operations
+                    AccessToken = "",
+                    RefreshToken = ""
+                };
+                // This is a simplified check. A real implementation would track the last checked email ID.
+                var response = await emailMcp.HandleCommandAsync("read 1 unread email", userContext);
+
+                if (response.Success && response.Data is not null)
                 {
-                    _logger.LogDebug("User {UserId} is not subscribed to EmailMcp, skipping notification", user.UserId);
+                    var emails = ((dynamic)response.Data).Emails;
+                    if (emails.Count > 0)
+                    {
+                        var email = emails[0];
+                        var message = $"New email from {email.From}: {email.Subject}";
+                        await _hubContext.Clients.User(user.UserId).SendAsync("ReceiveNotification", new { message });
+                    }
                 }
             }
         }
