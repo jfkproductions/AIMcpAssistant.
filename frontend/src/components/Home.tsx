@@ -2,7 +2,11 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useSignalR } from '../contexts/SignalRContext';
+import { useAIMCPContext } from '../hooks/useAIMCPContext';
 import GlobalHeader from './GlobalHeader';
+import NotificationCenter from './NotificationCenter';
+import EmailNotificationTest from './EmailNotificationTest';
+
 import axios from '../utils/axios';
 import './Home.css';
 
@@ -16,11 +20,13 @@ interface Message {
 const Home: React.FC = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
-  const { lastCommandResponse, isConnected } = useSignalR();
+  const { lastCommandResponse, isConnected, notifications } = useSignalR();
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [speakerEnabled, setSpeakerEnabled] = useState(true);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [emailFlash, setEmailFlash] = useState<{show: boolean, subject: string, from: string}>({show: false, subject: '', from: ''});
+  const { currentMCPContext, handleAIMCPCommand, getCurrentMCPContext, setCurrentMCPContext } = useAIMCPContext();
   const [messages, setMessages] = useState<Message[]>([
     {
       id: '1',
@@ -33,6 +39,8 @@ const Home: React.FC = () => {
   const recognitionRef = useRef<any>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const conversationRef = useRef<HTMLDivElement>(null);
+
+
 
   useEffect(() => {
     // Initialize speech recognition if available
@@ -105,8 +113,26 @@ const Home: React.FC = () => {
     setIsProcessing(true);
 
     try {
+      // Check for AIMCP context commands
+      const aimcpResult = handleAIMCPCommand(input);
+      if (aimcpResult.handled) {
+        const aiMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          type: 'ai',
+          content: aimcpResult.message,
+          timestamp: new Date()
+        };
+        setMessages(prev => [...prev, aiMessage]);
+        
+        if (speakerEnabled) {
+          await speakText(aimcpResult.message);
+        }
+        return;
+      }
+
       const response = await axios.post('/api/command/process', {
-        input: input
+        input: input,
+        preferredModule: getCurrentMCPContext()
       });
 
       if (response.data.success) {
@@ -262,9 +288,87 @@ const Home: React.FC = () => {
     }
   }, [lastCommandResponse, speakerEnabled]);
 
+  // Handle email notifications from SignalR
+  useEffect(() => {
+    const emailNotifications = notifications.filter(n => n.moduleId === 'EmailMcp' && n.type === 'NewEmail');
+    if (emailNotifications.length > 0) {
+      const latestEmail = emailNotifications[0];
+      const subject = latestEmail.data?.Subject || 'No Subject';
+      const from = latestEmail.data?.From || 'Unknown Sender';
+      
+      // Show flash message
+      setEmailFlash({ show: true, subject, from });
+      
+      // Auto-hide flash after 5 seconds
+      setTimeout(() => {
+        setEmailFlash(prev => ({ ...prev, show: false }));
+      }, 5000);
+      
+      // Speak the email notification if speaker is enabled
+      if (speakerEnabled) {
+        const voiceMessage = latestEmail.metadata?.voiceMessage || `New email from ${from}. Subject: ${subject}`;
+        speakText(voiceMessage);
+      }
+      
+      console.log('📧 Email notification processed:', { subject, from });
+    }
+  }, [notifications, speakerEnabled]);
+
   return (
     <div className="home-container">
-      <GlobalHeader title="Next-generation AI assistant" />
+      <GlobalHeader title="AIMCP Virtual Assistant" />
+      <NotificationCenter />
+      
+      {/* MCP Context Indicator */}
+      {currentMCPContext && (
+        <div className="mcp-context-indicator">
+          <div className="mcp-context-content">
+            <span className="mcp-context-icon">🎯</span>
+            <span className="mcp-context-text">
+              Active Context: <strong>{currentMCPContext.toUpperCase()}</strong>
+            </span>
+            <span className="mcp-context-hint">
+              Commands will be routed to {currentMCPContext} module
+            </span>
+            <button 
+              className="mcp-context-exit"
+              onClick={() => {
+                setCurrentMCPContext(null);
+                const exitMessage: Message = {
+                  id: Date.now().toString(),
+                  type: 'ai',
+                  content: `✅ Exited ${currentMCPContext?.toUpperCase()} context. Commands will now be routed automatically based on intent.`,
+                  timestamp: new Date()
+                };
+                setMessages(prev => [...prev, exitMessage]);
+              }}
+              title="Exit current context"
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      )}
+      
+      {/* Email Flash Notification */}
+      {emailFlash.show && (
+        <div className="email-flash-notification">
+          <div className="email-flash-content">
+            <div className="email-flash-icon">📧</div>
+            <div className="email-flash-text">
+              <div className="email-flash-title">New Email</div>
+              <div className="email-flash-from">From: {emailFlash.from}</div>
+              <div className="email-flash-subject">Subject: {emailFlash.subject}</div>
+            </div>
+            <button 
+              className="email-flash-close"
+              onClick={() => setEmailFlash(prev => ({ ...prev, show: false }))}
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      )}
 
       <main className="main-content">
         <div className="ai-avatar">
@@ -345,6 +449,10 @@ const Home: React.FC = () => {
           <span className="nav-label">Dashboard</span>
         </button>
       </nav>
+      
+      {/* Email Notification Test Component */}
+      <EmailNotificationTest />
+ 
     </div>
   );
 };

@@ -9,15 +9,20 @@ using Google.Apis.Auth.OAuth2;
 using Google.Apis.Gmail.v1;
 using Google.Apis.Gmail.v1.Data;
 using Google.Apis.Services;
+using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Web;
 
 namespace AIMcpAssistant.MCPs;
 
 public class EmailMcp : BaseMcpModule
 {
     private readonly Dictionary<string, McpResponse> _lastResponse = new();
-    private readonly Dictionary<string, dynamic> _lastEmailContext = new();
+    private readonly Dictionary<string, object> _lastEmailContext = new();
+    private readonly Dictionary<string, string> _pendingConfirmations = new();
+    private readonly Dictionary<string, CancellationTokenSource> _readingCancellationTokens = new();
+    private readonly IConversationContextService _conversationContextService;
     public override string Id => "email";
     public override string Name => "Email Manager";
     public override string Description => "Manage emails from Google Gmail and Microsoft Outlook";
@@ -34,9 +39,12 @@ public class EmailMcp : BaseMcpModule
         "search emails", "find emails", "look for emails"
     };
 
-    public EmailMcp(ILogger<EmailMcp> logger) : base(logger) { }
+    public EmailMcp(ILogger<EmailMcp> logger, IConversationContextService conversationContextService) : base(logger) 
+    {
+        _conversationContextService = conversationContextService;
+    }
 
-        public override async Task<double> CanHandleAsync(string input, UserContext context)
+    public override async Task<double> CanHandleAsync(string input, UserContext context)
     {
         if (_lastResponse.ContainsKey(context.UserId))
         {
@@ -44,6 +52,13 @@ public class EmailMcp : BaseMcpModule
         }
         
         var normalizedInput = input.ToLowerInvariant().Trim();
+        
+        // Check if this is a follow-up command using conversation context
+        var isFollowUp = await _conversationContextService.IsFollowUpCommandAsync(input, context.UserId);
+        if (isFollowUp)
+        {
+            return 0.98; // Very high confidence for conversation follow-ups
+        }
         
         // High confidence for follow-up commands when we have email context
         if (_lastEmailContext.ContainsKey(context.UserId))
@@ -84,7 +99,202 @@ public class EmailMcp : BaseMcpModule
         return 0.0;
     }
 
-        public override async Task<McpResponse> HandleCommandAsync(string input, UserContext context)
+    private McpResponse HandleStopReading(UserContext context)
+    {
+        if (_readingCancellationTokens.TryGetValue(context.UserId, out var cancellationTokenSource))
+        {
+            cancellationTokenSource.Cancel();
+            _readingCancellationTokens.Remove(context.UserId);
+            return Success("Email reading stopped.");
+        }
+        
+        return Success("No email reading operation is currently active.");
+    }
+    
+    private async Task<McpResponse> HandleConfirmationResponse(string input, UserContext context)
+    {
+        var confirmationType = _pendingConfirmations[context.UserId];
+        _pendingConfirmations.Remove(context.UserId);
+        
+        if (input.Contains("yes") || input.Contains("confirm"))
+        {
+            switch (confirmationType)
+            {
+                case "delete_email":
+                    return await ExecuteEmailDeletion(context);
+                case "move_to_spam":
+                    return await ExecuteMoveToSpam(context);
+                default:
+                    return Error("Unknown confirmation type.");
+            }
+        }
+        else if (input.Contains("no") || input.Contains("cancel"))
+        {
+            return Success("Operation cancelled.");
+        }
+        else
+        {
+            // Put the confirmation back if the response is unclear
+            _pendingConfirmations[context.UserId] = confirmationType;
+            return Success("Please respond with 'yes' to confirm or 'no' to cancel.");
+        }
+    }
+    
+    private async Task<McpResponse> HandleContextualConfirmationResponse(string input, UserContext context, string conversationContext)
+    {
+        try
+        {
+            // Analyze conversation context to determine what the user is confirming
+            var isConfirming = input.Contains("yes") || input.Contains("confirm");
+            var contextLower = conversationContext.ToLowerInvariant();
+            
+            // Check for delete email confirmation
+            if (contextLower.Contains("delete") && contextLower.Contains("email"))
+            {
+                if (isConfirming)
+                {
+                    Logger.LogInformation("User confirmed email deletion based on conversation context");
+                    return await ExecuteEmailDeletion(context);
+                }
+                else
+                {
+                    return Success("Email deletion cancelled.");
+                }
+            }
+            
+            // Check for move to spam confirmation
+            if (contextLower.Contains("spam") || contextLower.Contains("junk"))
+            {
+                if (isConfirming)
+                {
+                    Logger.LogInformation("User confirmed move to spam based on conversation context");
+                    return await ExecuteMoveToSpam(context);
+                }
+                else
+                {
+                    return Success("Move to spam cancelled.");
+                }
+            }
+            
+            // Check for reply confirmation
+            if (contextLower.Contains("reply") || contextLower.Contains("respond"))
+            {
+                if (isConfirming)
+                {
+                    return Success("Please tell me what you'd like to say in your reply.");
+                }
+                else
+                {
+                    return Success("Reply cancelled.");
+                }
+            }
+            
+            // If we can't determine the context, ask for clarification
+            return Success("I understand you said '" + input + "', but I'm not sure what you're referring to. Could you please be more specific?");
+        }
+        catch (Exception ex)
+        {
+            LogError(ex, "Error handling contextual confirmation response");
+            return Error("Sorry, I had trouble understanding your response. Please try again.");
+        }
+    }
+    
+    private async Task<McpResponse> ExecuteEmailDeletion(UserContext context)
+    {
+        if (!_lastEmailContext.TryGetValue(context.UserId, out var emailData))
+        {
+            return Error("No email context found.");
+        }
+        
+        var emailInfo = (dynamic)emailData;
+        var emailId = emailInfo.Id;
+        
+        try
+        {
+            if (context.Provider == "Google")
+            {
+                var result = await DeleteGmailEmailAsync(emailId, context);
+                if (result.Success)
+                {
+                    _lastEmailContext.Remove(context.UserId);
+                }
+                return result;
+            }
+            else if (context.Provider == "Microsoft")
+            {
+                var result = await DeleteOutlookEmailAsync(emailId, context);
+                if (result.Success)
+                {
+                    _lastEmailContext.Remove(context.UserId);
+                }
+                return result;
+            }
+            else
+            {
+                return Error("Email provider not supported for deletion.");
+            }
+        }
+        catch (Exception ex)
+        {
+            LogError(ex, "Error executing email deletion");
+            return Error($"Failed to delete email: {ex.Message}");
+        }
+    }
+    
+    private async Task<McpResponse> ExecuteMoveToSpam(UserContext context)
+    {
+        if (!_lastEmailContext.TryGetValue(context.UserId, out var emailData))
+        {
+            return Error("No email context found.");
+        }
+        
+        var emailInfo = (dynamic)emailData;
+        var emailId = emailInfo.Id;
+        
+        try
+        {
+            if (context.Provider == "Google")
+            {
+                var credential = GoogleCredential.FromAccessToken(context.AccessToken);
+                var service = new GmailService(new BaseClientService.Initializer()
+                {
+                    HttpClientInitializer = credential
+                });
+                
+                var modifyRequest = new ModifyMessageRequest
+                {
+                    AddLabelIds = new[] { "SPAM" },
+                    RemoveLabelIds = new[] { "INBOX" }
+                };
+                
+                await service.Users.Messages.Modify(modifyRequest, "me", emailId).ExecuteAsync();
+                _lastEmailContext.Remove(context.UserId);
+                return Success($"Email moved to spam successfully.");
+            }
+            else if (context.Provider == "Microsoft")
+            {
+                var graphClient = GetGraphServiceClient(context.AccessToken);
+                
+                await graphClient.Me.Messages[emailId].Move.PostAsync(new Microsoft.Graph.Me.Messages.Item.Move.MovePostRequestBody
+                {
+                    DestinationId = "junkemail"
+                });
+                _lastEmailContext.Remove(context.UserId);
+                return Success($"Email moved to spam successfully.");
+            }
+            else
+            {
+                return Error("Email provider not supported for moving to spam.");
+            }
+        }
+        catch (Exception ex)
+        {
+            LogError(ex, "Error moving email to spam");
+            return Error($"Failed to move email to spam: {ex.Message}");
+        }
+    }
+
+    public override async Task<McpResponse> HandleCommandAsync(string input, UserContext context)
     {
         if (_lastResponse.TryGetValue(context.UserId, out var lastResponse))
         {
@@ -132,6 +342,33 @@ public class EmailMcp : BaseMcpModule
         try
         {
             var normalizedInput = input.ToLowerInvariant().Trim();
+            
+            // Check for stop reading command
+            if (normalizedInput.Contains("stop") && (normalizedInput.Contains("reading") || normalizedInput.Contains("email")))
+            {
+                return HandleStopReading(context);
+            }
+            
+            // Handle pending confirmations
+            if (_pendingConfirmations.ContainsKey(context.UserId))
+            {
+                return await HandleConfirmationResponse(normalizedInput, context);
+            }
+            
+            // Check if this is a follow-up response using conversation context
+            var isFollowUp = await _conversationContextService.IsFollowUpCommandAsync(input, context.UserId);
+            if (isFollowUp)
+            {
+                // Get recent conversation to understand context
+                var conversationContext = await _conversationContextService.BuildConversationContextAsync(context.UserId, 3);
+                Logger.LogInformation("Processing follow-up command with context: {Context}", conversationContext);
+                
+                // Handle simple yes/no responses
+                if (normalizedInput == "yes" || normalizedInput == "no" || normalizedInput == "confirm" || normalizedInput == "cancel")
+                {
+                    return await HandleContextualConfirmationResponse(normalizedInput, context, conversationContext);
+                }
+            }
             
             // Check for follow-up commands when we have email context
             if (_lastEmailContext.ContainsKey(context.UserId))
@@ -275,7 +512,7 @@ public class EmailMcp : BaseMcpModule
             }
             
             // Store the email context for follow-up commands
-            if (response.IsSuccess && response.Data != null)
+            if (response.Success && response.Data != null)
             {
                 _lastEmailContext[context.UserId] = response.Data;
                 
@@ -295,83 +532,143 @@ public class EmailMcp : BaseMcpModule
 
     private async Task<McpResponse> ReadLatestGmailContentAsync(UserContext context)
     {
-        var credential = GoogleCredential.FromAccessToken(context.AccessToken);
-        var service = new GmailService(new BaseClientService.Initializer()
+        var cancellationTokenSource = new CancellationTokenSource();
+        _readingCancellationTokens[context.UserId] = cancellationTokenSource;
+        
+        try
         {
-            HttpClientInitializer = credential
-        });
+            var credential = GoogleCredential.FromAccessToken(context.AccessToken);
+            var service = new GmailService(new BaseClientService.Initializer()
+            {
+                HttpClientInitializer = credential
+            });
 
-        var request = service.Users.Messages.List("me");
-        request.MaxResults = 1;
-        request.Q = "in:inbox";
-        
-        var response = await request.ExecuteAsync();
-        
-        if (response.Messages == null || !response.Messages.Any())
-        {
-            return Success("Your inbox is empty.");
+            var request = service.Users.Messages.List("me");
+            request.MaxResults = 1;
+            request.Q = "in:inbox";
+            
+            var response = await request.ExecuteAsync(cancellationTokenSource.Token);
+            
+            if (response.Messages == null || !response.Messages.Any())
+            {
+                return Success("Your inbox is empty.");
+            }
+
+            var messageId = response.Messages.First().Id;
+            var fullMessage = await service.Users.Messages.Get("me", messageId).ExecuteAsync(cancellationTokenSource.Token);
+            
+            var subject = GetHeaderValue(fullMessage.Payload.Headers, "Subject") ?? "(No Subject)";
+            var from = GetHeaderValue(fullMessage.Payload.Headers, "From") ?? "Unknown Sender";
+            var date = GetHeaderValue(fullMessage.Payload.Headers, "Date") ?? "Unknown Date";
+            
+            var emailContent = ExtractEmailContent(fullMessage.Payload);
+            var content = GetCleanEmailContent(emailContent);
+            
+            // If no content was extracted, fall back to snippet
+            if (string.IsNullOrEmpty(content) || content == "No readable content available")
+            {
+                content = fullMessage.Snippet ?? "No content available";
+            }
+            
+            // Check for cancellation before processing content
+            cancellationTokenSource.Token.ThrowIfCancellationRequested();
+            
+            var emailDetails = $"**Subject:** {subject}\n**From:** {from}\n**Date:** {date}\n\n**Content:**\n{content}";
+            
+            var emailData = new
+            {
+                Id = messageId,
+                Subject = subject,
+                From = from,
+                Date = date,
+                Content = content,
+                Provider = "Google"
+            };
+            
+            return Success(emailDetails, emailData);
         }
-
-        var messageId = response.Messages.First().Id;
-        var fullMessage = await service.Users.Messages.Get("me", messageId).ExecuteAsync();
-        
-        var subject = GetHeaderValue(fullMessage.Payload.Headers, "Subject") ?? "(No Subject)";
-        var from = GetHeaderValue(fullMessage.Payload.Headers, "From") ?? "Unknown Sender";
-        var date = GetHeaderValue(fullMessage.Payload.Headers, "Date") ?? "Unknown Date";
-        
-        var emailContent = ExtractEmailContent(fullMessage.Payload);
-        var content = !string.IsNullOrEmpty(emailContent.text) ? emailContent.text : fullMessage.Snippet ?? "No content available";
-        
-        var emailDetails = $"**Subject:** {subject}\n**From:** {from}\n**Date:** {date}\n\n**Content:**\n{content}";
-        
-        var emailData = new
+        catch (OperationCanceledException)
         {
-            MessageId = messageId,
-            Subject = subject,
-            From = from,
-            Date = date,
-            Content = content,
-            Provider = "Google"
-        };
-        
-        return Success(emailDetails, emailData);
+            return Success("Email reading was stopped.");
+        }
+        finally
+        {
+            _readingCancellationTokens.Remove(context.UserId);
+        }
     }
 
     private async Task<McpResponse> ReadLatestOutlookContentAsync(UserContext context)
     {
-        var graphClient = GetGraphServiceClient(context.AccessToken);
+        var cancellationTokenSource = new CancellationTokenSource();
+        _readingCancellationTokens[context.UserId] = cancellationTokenSource;
+        
+        try
+        {
+            var graphClient = GetGraphServiceClient(context.AccessToken);
 
-        var messages = await graphClient.Me.Messages
-            .GetAsync(requestConfiguration =>
+            var messages = await graphClient.Me.Messages
+                .GetAsync(requestConfiguration =>
+                {
+                    requestConfiguration.QueryParameters.Top = 1;
+                    requestConfiguration.QueryParameters.Orderby = new[] { "receivedDateTime desc" };
+                }, cancellationTokenSource.Token);
+
+            if (messages?.Value == null || !messages.Value.Any())
             {
-                requestConfiguration.QueryParameters.Top = 1;
-                requestConfiguration.QueryParameters.Orderby = new[] { "receivedDateTime desc" };
-            });
+                return Success("Your inbox is empty.");
+            }
 
-        if (messages?.Value == null || !messages.Value.Any())
-        {
-            return Success("Your inbox is empty.");
+            var message = messages.Value.First();
+            var subject = message.Subject ?? "(No Subject)";
+            var from = message.From?.EmailAddress?.Address ?? "Unknown Sender";
+            var date = message.ReceivedDateTime?.ToString("yyyy-MM-dd HH:mm") ?? "Unknown Date";
+            
+            // Extract clean content from Outlook message
+            var content = "No content available";
+            if (message.Body?.Content != null)
+            {
+                if (message.Body.ContentType == Microsoft.Graph.Models.BodyType.Html)
+                {
+                    content = ConvertHtmlToPlainText(message.Body.Content);
+                }
+                else
+                {
+                    content = message.Body.Content;
+                    // Clean any base64 or binary content from plain text
+                    content = Regex.Replace(content, @"[A-Za-z0-9+/]{50,}={0,2}", "[Binary Content Removed]", RegexOptions.IgnoreCase);
+                    content = Regex.Replace(content, @"data:[^;]+;base64,[A-Za-z0-9+/=]+", "[Image]", RegexOptions.IgnoreCase);
+                }
+            }
+            else if (message.BodyPreview != null)
+            {
+                content = message.BodyPreview;
+            }
+            
+            // Check for cancellation before processing content
+            cancellationTokenSource.Token.ThrowIfCancellationRequested();
+            
+            var emailDetails = $"**Subject:** {subject}\n**From:** {from}\n**Date:** {date}\n\n**Content:**\n{content}";
+            
+            var emailData = new
+            {
+                Id = message.Id,
+                Subject = subject,
+                From = from,
+                Date = date,
+                Content = content,
+                Provider = "Microsoft"
+            };
+            
+            return Success(emailDetails, emailData);
         }
-
-        var message = messages.Value.First();
-        var subject = message.Subject ?? "(No Subject)";
-        var from = message.From?.EmailAddress?.Address ?? "Unknown Sender";
-        var date = message.ReceivedDateTime?.ToString("yyyy-MM-dd HH:mm") ?? "Unknown Date";
-        var content = message.Body?.Content ?? message.BodyPreview ?? "No content available";
-        
-        var emailDetails = $"**Subject:** {subject}\n**From:** {from}\n**Date:** {date}\n\n**Content:**\n{content}";
-        
-        var emailData = new
+        catch (OperationCanceledException)
         {
-            MessageId = message.Id,
-            Subject = subject,
-            From = from,
-            Date = date,
-            Content = content,
-            Provider = "Microsoft"
-        };
-        
-        return Success(emailDetails, emailData);
+            return Success("Email reading was stopped.");
+        }
+        finally
+        {
+            _readingCancellationTokens.Remove(context.UserId);
+        }
     }
 
     private EmailContent ExtractEmailContent(MessagePart messagePart)
@@ -406,6 +703,70 @@ public class EmailMcp : BaseMcpModule
         return new EmailContent { text = textContent, html = htmlContent };
     }
 
+    private string ConvertHtmlToPlainText(string html)
+    {
+        if (string.IsNullOrEmpty(html))
+            return string.Empty;
+
+        try
+        {
+            // Decode HTML entities
+            var decoded = HttpUtility.HtmlDecode(html);
+            
+            // Remove script and style elements completely
+            decoded = Regex.Replace(decoded, @"<(script|style)[^>]*>.*?</\1>", "", RegexOptions.IgnoreCase | RegexOptions.Singleline);
+            
+            // Replace common block elements with line breaks
+            decoded = Regex.Replace(decoded, @"<(div|p|br|h[1-6]|li|tr)[^>]*>", "\n", RegexOptions.IgnoreCase);
+            decoded = Regex.Replace(decoded, @"</(div|p|h[1-6]|li|tr)>", "\n", RegexOptions.IgnoreCase);
+            
+            // Remove all remaining HTML tags
+            decoded = Regex.Replace(decoded, @"<[^>]+>", "", RegexOptions.IgnoreCase);
+            
+            // Clean up whitespace
+            decoded = Regex.Replace(decoded, @"\s+", " ", RegexOptions.Multiline);
+            decoded = Regex.Replace(decoded, @"\n\s*\n", "\n", RegexOptions.Multiline);
+            
+            // Remove base64 image data and other binary content
+            decoded = Regex.Replace(decoded, @"data:[^;]+;base64,[A-Za-z0-9+/=]+", "[Image]", RegexOptions.IgnoreCase);
+            
+            // Remove any remaining suspicious base64-like content
+            decoded = Regex.Replace(decoded, @"[A-Za-z0-9+/]{50,}={0,2}", "[Binary Content Removed]", RegexOptions.IgnoreCase);
+            
+            return decoded.Trim();
+        }
+        catch (Exception)
+        {
+            // If HTML parsing fails, return a safe fallback
+            return "[Content could not be parsed safely]";
+        }
+    }
+
+    private string GetCleanEmailContent(EmailContent emailContent)
+    {
+        // Prioritize plain text content
+        if (!string.IsNullOrEmpty(emailContent.text))
+        {
+            var cleanText = emailContent.text;
+            
+            // Remove any base64 content that might have slipped through
+            cleanText = Regex.Replace(cleanText, @"[A-Za-z0-9+/]{50,}={0,2}", "[Binary Content Removed]", RegexOptions.IgnoreCase);
+            
+            // Remove data URLs
+            cleanText = Regex.Replace(cleanText, @"data:[^;]+;base64,[A-Za-z0-9+/=]+", "[Image]", RegexOptions.IgnoreCase);
+            
+            return cleanText.Trim();
+        }
+        
+        // Fall back to HTML content, but convert it to plain text
+        if (!string.IsNullOrEmpty(emailContent.html))
+        {
+            return ConvertHtmlToPlainText(emailContent.html);
+        }
+        
+        return "No readable content available";
+    }
+
     private class EmailContent
     {
         public string text { get; set; } = "";
@@ -431,6 +792,7 @@ public class EmailMcp : BaseMcpModule
         }
 
         var emailInfo = (dynamic)emailData;
+        _pendingConfirmations[context.UserId] = "delete_email";
         return Success($"Are you sure you want to delete the email '{emailInfo.Subject}' from {emailInfo.From}? Reply 'yes' to confirm or 'no' to cancel.");
     }
 
@@ -442,6 +804,7 @@ public class EmailMcp : BaseMcpModule
         }
 
         var emailInfo = (dynamic)emailData;
+        _pendingConfirmations[context.UserId] = "move_to_spam";
         return Success($"Are you sure you want to move the email '{emailInfo.Subject}' from {emailInfo.From} to spam? Reply 'yes' to confirm or 'no' to cancel.");
     }
 

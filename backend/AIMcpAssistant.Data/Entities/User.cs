@@ -29,6 +29,15 @@ public class User
     
     public bool IsActive { get; set; } = true;
     
+    // OAuth token storage for background services
+    [MaxLength(2000)]
+    public string? AccessToken { get; set; }
+    
+    [MaxLength(2000)]
+    public string? RefreshToken { get; set; }
+    
+    public DateTime? TokenExpiresAt { get; set; }
+    
     // Navigation properties
     public virtual ICollection<CommandHistory> CommandHistories { get; set; } = new List<CommandHistory>();
     public virtual ICollection<UserModuleSubscription> ModuleSubscriptions { get; set; } = new List<UserModuleSubscription>();

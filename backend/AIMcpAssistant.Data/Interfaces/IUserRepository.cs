@@ -9,4 +9,6 @@ public interface IUserRepository : IRepository<User>
     Task<IEnumerable<User>> GetActiveUsersAsync();
     Task UpdateLastLoginAsync(string userId);
     Task<IEnumerable<User>> GetUsersWithActiveEmailSubscriptionsAsync();
+    Task UpdateOAuthTokensAsync(string userId, string accessToken, string? refreshToken, DateTime? expiresAt);
+    Task<User?> GetUserWithValidTokenAsync(string userId);
 }

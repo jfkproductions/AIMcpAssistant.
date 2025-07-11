@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { MicrophoneIcon, StopIcon, SpeakerWaveIcon, SpeakerXMarkIcon, ChevronDownIcon } from '@heroicons/react/24/solid';
 import axios from '../utils/axios';
 import { useSignalR } from '../contexts/SignalRContext';
+import { useAIMCPContext } from '../hooks/useAIMCPContext';
+import './VoiceInterface.css';
 
 
 interface VoiceInterfaceProps {
@@ -54,6 +56,7 @@ const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ className = '' }) => {
   const recognitionRef = useRef<any>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const { lastCommandResponse, isConnected, notifications } = useSignalR();
+  const { currentMCPContext, handleAIMCPCommand, getCurrentMCPContext, setCurrentMCPContext } = useAIMCPContext();
 
   const fetchEnabledModules = async () => {
     try {
@@ -165,12 +168,45 @@ const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ className = '' }) => {
       setIsProcessing(true);
       setError('');
       
+      // Check if this is an AIMCP context command
+      const aimcpResult = handleAIMCPCommand(command);
+      if (aimcpResult.handled) {
+        // Add to conversation history
+        const userEntry = {
+          id: Date.now().toString() + '-user',
+          type: 'user' as const,
+          content: command,
+          timestamp: new Date()
+        };
+        
+        const assistantEntry = {
+          id: Date.now().toString() + '-assistant',
+          type: 'assistant' as const,
+          content: aimcpResult.message,
+          timestamp: new Date()
+        };
+        
+        setConversationHistory(prev => [...prev, userEntry, assistantEntry]);
+        setResponse(aimcpResult.message);
+        
+        // Speak the response if speaker is enabled
+        if (speakerEnabled && aimcpResult.message) {
+          await speakText(aimcpResult.message);
+        }
+        
+        setIsProcessing(false);
+        return;
+      }
+      
       const requestBody: any = {
         input: command
       };
       
-      // Add preferred module if one is selected
-      if (selectedModule !== 'auto') {
+      // Add preferred module if one is selected, or use current MCP context
+      const contextModule = getCurrentMCPContext();
+      if (contextModule) {
+        requestBody.preferredModule = contextModule;
+      } else if (selectedModule !== 'auto') {
         requestBody.preferredModule = selectedModule;
       }
       
@@ -213,6 +249,38 @@ const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ className = '' }) => {
   const handleVoiceCommand = async (spokenText: string) => {
     // Add user input to history
     addToHistory('user', spokenText);
+    
+    // Check for stop commands first
+    const normalizedText = spokenText.toLowerCase();
+    if ((normalizedText.includes('stop') && (normalizedText.includes('reading') || normalizedText.includes('speaking') || normalizedText.includes('talking'))) ||
+        normalizedText.includes('stop reading') || normalizedText.includes('stop speaking') || normalizedText.includes('stop talking')) {
+      stopSpeaking();
+      addToHistory('assistant', 'Stopped speaking.');
+      
+      // If we're in an email workflow and currently reading, transition to ask delete
+      if (emailWorkflowState.active && emailWorkflowState.step === 'reading') {
+        setTimeout(async () => {
+          const deleteMessage = 'Would you like me to delete this email?';
+          await speakText(deleteMessage);
+          
+          setEmailWorkflowState(prev => ({
+            ...prev,
+            step: 'askDelete',
+            waitingForResponse: true
+          }));
+          
+          addToHistory('assistant', deleteMessage);
+          
+          // Automatically start listening for user response
+          setTimeout(() => {
+            if (!isListening) {
+              startListening();
+            }
+          }, 500);
+        }, 500);
+      }
+      return;
+    }
     
     // Check if we're in an email workflow
     if (emailWorkflowState.active) {
@@ -540,6 +608,29 @@ const VoiceInterface: React.FC<VoiceInterfaceProps> = ({ className = '' }) => {
             </span>
           </div>
         </div>
+
+        {/* MCP Context Indicator */}
+        {currentMCPContext && (
+          <div className="mcp-context-indicator mb-6">
+            <div className="mcp-context-content">
+              <div className="mcp-context-badge">
+                🎯 {currentMCPContext.toUpperCase()} Context Active
+              </div>
+              <div className="mcp-context-hint">
+                All commands will be routed to the {currentMCPContext} module
+              </div>
+              <button 
+                onClick={() => {
+                  setCurrentMCPContext(null);
+                  addToHistory('assistant', `✅ Exited ${currentMCPContext?.toUpperCase()} context. Commands will now be routed automatically based on intent.`);
+                }}
+                className="mcp-context-exit"
+              >
+                Exit Context
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Module Selection */}
         <div className="mb-6">

@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { XMarkIcon } from '@heroicons/react/24/outline';
 import { clsx } from 'clsx';
+import { useSignalR } from '../contexts/SignalRContext';
 
-interface Notification {
+interface LocalNotification {
   id: string;
   type: 'success' | 'error' | 'warning' | 'info';
   title: string;
@@ -11,15 +12,36 @@ interface Notification {
 }
 
 const NotificationCenter: React.FC = () => {
-  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const { notifications: signalRNotifications, removeNotification: removeSignalRNotification } = useSignalR();
+  const [localNotifications, setLocalNotifications] = useState<LocalNotification[]>([]);
 
   const removeNotification = (id: string) => {
-    setNotifications(prev => prev.filter(notification => notification.id !== id));
+    setLocalNotifications(prev => prev.filter(notification => notification.id !== id));
+    removeSignalRNotification(id);
   };
+
+  // Convert SignalR notifications to local notifications
+  useEffect(() => {
+    if (signalRNotifications.length > 0) {
+      const newLocalNotifications = signalRNotifications
+        .filter(notification => !localNotifications.some(local => local.id === notification.id))
+        .map(notification => ({
+          id: notification.id,
+          type: notification.type === 'NewEmail' ? 'info' as const : 'info' as const,
+          title: notification.title,
+          message: notification.message,
+          timestamp: new Date(notification.timestamp)
+        }));
+      
+      if (newLocalNotifications.length > 0) {
+        setLocalNotifications(prev => [...prev, ...newLocalNotifications]);
+      }
+    }
+  }, [signalRNotifications, localNotifications]);
 
   // Auto-remove notifications after 5 seconds
   useEffect(() => {
-    const timers = notifications.map(notification => {
+    const timers = localNotifications.map(notification => {
       return setTimeout(() => {
         removeNotification(notification.id);
       }, 5000);
@@ -28,9 +50,9 @@ const NotificationCenter: React.FC = () => {
     return () => {
       timers.forEach(timer => clearTimeout(timer));
     };
-  }, [notifications]);
+  }, [localNotifications]);
 
-  const getNotificationStyles = (type: Notification['type']) => {
+  const getNotificationStyles = (type: LocalNotification['type']) => {
     switch (type) {
       case 'success':
         return 'bg-green-50 border-green-200 text-green-800';
@@ -44,13 +66,13 @@ const NotificationCenter: React.FC = () => {
     }
   };
 
-  if (notifications.length === 0) {
+  if (localNotifications.length === 0) {
     return null;
   }
 
   return (
     <div className="fixed top-4 right-4 z-50 space-y-2">
-      {notifications.map((notification) => (
+      {localNotifications.map((notification) => (
         <div
           key={notification.id}
           className={clsx(

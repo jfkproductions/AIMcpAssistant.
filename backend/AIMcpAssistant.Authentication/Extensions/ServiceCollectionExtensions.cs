@@ -55,7 +55,7 @@ public static class ServiceCollectionExtensions
             // Add required scopes
             options.Scope.Add("email");
             options.Scope.Add("profile");
-            options.Scope.Add("https://www.googleapis.com/auth/gmail.readonly");
+            options.Scope.Add("https://www.googleapis.com/auth/gmail.modify");
             options.Scope.Add("https://www.googleapis.com/auth/calendar.readonly");
         })
         .AddMicrosoftAccount(options =>

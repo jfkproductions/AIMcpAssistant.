@@ -8,8 +8,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using System.Collections.Concurrent;
-using AIMcpAssistant.MCPs;
-using AIMcpAssistant.Core.Models;
+using AIMcpAssistant.Core.Interfaces;
+using AIMcpAssistant.Core.Services;
 
 namespace AIMcpAssistant.Api.Services;
 
@@ -20,7 +20,7 @@ public class EmailNotificationService : BackgroundService
     private readonly IHubContext<NotificationHub> _hubContext;
     private readonly ConcurrentDictionary<string, DateTime> _lastEmailCheck = new();
     private readonly ConcurrentDictionary<string, List<string>> _lastEmailIds = new();
-    private readonly TimeSpan _checkInterval = TimeSpan.FromSeconds(30); // Check every 30 seconds for testing
+    private readonly TimeSpan _checkInterval = TimeSpan.FromMinutes(5); // Check every 5 minutes (reduced since email checking is disabled)
 
     public EmailNotificationService(
         IServiceProvider serviceProvider,
@@ -43,10 +43,22 @@ public class EmailNotificationService : BackgroundService
                 await CheckForNewEmails();
                 await Task.Delay(_checkInterval, stoppingToken);
             }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                // Expected when service is stopping
+                break;
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error in email notification service");
-                await Task.Delay(TimeSpan.FromMinutes(5), stoppingToken); // Wait longer on error
+                try
+                {
+                    await Task.Delay(TimeSpan.FromMinutes(5), stoppingToken); // Wait longer on error
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    break;
+                }
             }
         }
 
@@ -57,42 +69,37 @@ public class EmailNotificationService : BackgroundService
     {
         using var scope = _serviceProvider.CreateScope();
         var userRepository = scope.ServiceProvider.GetRequiredService<IUserRepository>();
-        var emailMcp = scope.ServiceProvider.GetRequiredService<EmailMcp>();
 
         try
         {
+            _logger.LogInformation("🔍 Starting email check cycle at {Time}", DateTime.UtcNow);
             var usersToNotify = await userRepository.GetUsersWithActiveEmailSubscriptionsAsync();
-
-            foreach (var user in usersToNotify)
+            
+            if (usersToNotify.Any())
             {
-                var userContext = new UserContext
+                _logger.LogInformation("📋 Found {Count} users with email subscriptions and valid tokens", usersToNotify.Count());
+                
+                foreach (var user in usersToNotify)
                 {
-                    UserId = user.UserId,
-                    Provider = user.Provider,
-                    // Note: We need to get the tokens from somewhere else, as they're not stored in the User entity
-                    // This is a security measure - tokens should not be stored in the database
-                    // For now, we'll skip token-based operations
-                    AccessToken = "",
-                    RefreshToken = ""
-                };
-                // This is a simplified check. A real implementation would track the last checked email ID.
-                var response = await emailMcp.HandleCommandAsync("read 1 unread email", userContext);
-
-                if (response.Success && response.Data is not null)
-                {
-                    var emails = ((dynamic)response.Data).Emails;
-                    if (emails.Count > 0)
+                    if (!string.IsNullOrEmpty(user.AccessToken))
                     {
-                        var email = emails[0];
-                        var message = $"New email from {email.From}: {email.Subject}";
-                        await _hubContext.Clients.User(user.UserId).SendAsync("ReceiveNotification", new { message });
+                        _logger.LogInformation("👤 Checking emails for user {UserId} ({Email})", user.UserId, user.Email);
+                        await CheckUserEmails(user.UserId, user.Email, user.AccessToken);
+                    }
+                    else
+                    {
+                        _logger.LogWarning("⚠️ User {UserId} has no access token", user.UserId);
                     }
                 }
+            }
+            else
+            {
+                _logger.LogInformation("📭 No users with active email subscriptions and valid tokens found");
             }
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error checking for new emails");
+            _logger.LogError(ex, "❌ Error checking for new emails");
         }
     }
 
@@ -103,7 +110,8 @@ public class EmailNotificationService : BackgroundService
             using var scope = _serviceProvider.CreateScope();
             // Create EmailMcp instance to check for new emails
             var emailMcpLogger = scope.ServiceProvider.GetRequiredService<ILogger<EmailMcp>>();
-            var emailMcp = new EmailMcp(emailMcpLogger);
+            var conversationContextService = scope.ServiceProvider.GetRequiredService<IConversationContextService>();
+            var emailMcp = new EmailMcp(emailMcpLogger, conversationContextService);
             
             // Get recent emails (last 10 emails)
             var context = new UserContext
@@ -160,7 +168,11 @@ public class EmailNotificationService : BackgroundService
                 
                 if (newEmails.Any())
                 {
-                    _logger.LogInformation("Sent {Count} new email notifications to user {UserId}", newEmails.Count, userId);
+                    _logger.LogInformation("📬 Sent {Count} new email notifications to user {UserId}", newEmails.Count, userId);
+                }
+                else
+                {
+                    _logger.LogInformation("📪 No new emails found for user {UserId}", userId);
                 }
             }
         }
@@ -178,6 +190,9 @@ public class EmailNotificationService : BackgroundService
             var from = email.From?.EmailAddress?.Address?.ToString() ?? "Unknown Sender";
             var snippet = email.BodyPreview?.ToString() ?? "";
             var receivedTime = email.ReceivedDateTime?.ToString() ?? DateTime.UtcNow.ToString();
+            
+            // Enhanced logging for debugging
+            _logger.LogInformation("📧 NEW EMAIL NOTIFICATION: Subject='{Subject}', From='{From}', UserId='{UserId}'", (object)subject, (object)from, (object)userId);
             
             var notification = new McpUpdate
             {
@@ -199,16 +214,17 @@ public class EmailNotificationService : BackgroundService
                 Metadata = new Dictionary<string, object>
                 {
                     ["requiresVoiceResponse"] = true,
-                    ["voiceMessage"] = "New Email",
+                    ["voiceMessage"] = $"New email from {from}. Subject: {subject}",
                     ["followUpActions"] = new[] { "read", "delete", "reply" }
                 }
             };
 
             await NotificationHub.SendNotificationAsync(_hubContext, userId, notification);
+            _logger.LogInformation("✅ Email notification sent successfully to user {UserId} via SignalR", userId);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error sending email notification to user {UserId}", userId);
+            _logger.LogError(ex, "❌ Error sending email notification to user {UserId}", userId);
         }
     }
 }

@@ -39,7 +39,29 @@ public class UserRepository : Repository<User>, IUserRepository
     {
         return await _dbSet
             .Include(u => u.ModuleSubscriptions)
-            .Where(u => u.ModuleSubscriptions.Any(s => s.ModuleId == "email" && s.IsSubscribed))
+            .Where(u => u.ModuleSubscriptions.Any(s => s.ModuleId == "email" && s.IsSubscribed) && 
+                       !string.IsNullOrEmpty(u.AccessToken) &&
+                       (u.TokenExpiresAt == null || u.TokenExpiresAt > DateTime.UtcNow))
             .ToListAsync();
+    }
+
+    public async Task UpdateOAuthTokensAsync(string userId, string accessToken, string? refreshToken, DateTime? expiresAt)
+    {
+        var user = await GetByUserIdAsync(userId);
+        if (user != null)
+        {
+            user.AccessToken = accessToken;
+            user.RefreshToken = refreshToken;
+            user.TokenExpiresAt = expiresAt;
+            await UpdateAsync(user);
+        }
+    }
+
+    public async Task<User?> GetUserWithValidTokenAsync(string userId)
+    {
+        return await _dbSet
+            .FirstOrDefaultAsync(u => u.UserId == userId && 
+                                    !string.IsNullOrEmpty(u.AccessToken) &&
+                                    (u.TokenExpiresAt == null || u.TokenExpiresAt > DateTime.UtcNow));
     }
 }

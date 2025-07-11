@@ -2,6 +2,7 @@ using AIMcpAssistant.Core.Models;
 using AIMcpAssistant.Core.Services;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
+using System.Collections.Generic;
 using System.Text;
 using AIMcpAssistant.Core.Interfaces;
 
@@ -11,6 +12,7 @@ public class ChatGptMcp : BaseMcpModule
 {
     private readonly HttpClient _httpClient;
     private readonly ICommandDispatcher _commandDispatcher;
+    private readonly IConversationContextService _conversationContextService;
     private string? _apiKey;
 
     public override string Id => "chatgpt";
@@ -23,10 +25,11 @@ public class ChatGptMcp : BaseMcpModule
         "*" // Catch-all pattern for any command not handled by other modules
     };
 
-    public ChatGptMcp(ILogger<ChatGptMcp> logger, HttpClient httpClient, ICommandDispatcher commandDispatcher) : base(logger)
+    public ChatGptMcp(ILogger<ChatGptMcp> logger, HttpClient httpClient, ICommandDispatcher commandDispatcher, IConversationContextService conversationContextService) : base(logger)
     {
         _httpClient = httpClient;
         _commandDispatcher = commandDispatcher;
+        _conversationContextService = conversationContextService;
     }
 
     protected override async Task OnInitializeAsync()
@@ -189,15 +192,15 @@ Respond ONLY with a JSON object in this exact format:{
 
     private async Task<string> CallOpenAiAsync(string input, UserContext context)
     {
-        var requestBody = new
+        // Get recent conversation history for context
+        var conversationHistory = await _conversationContextService.GetRecentConversationAsync(context.UserId, 5);
+        
+        var messages = new List<object>
         {
-            model = "gpt-3.5-turbo",
-            messages = new[]
+            new
             {
-                new
-                {
-                    role = "system",
-                    content = @"You are a helpful personal AI assistant. Your role is to:
+                role = "system",
+                content = @"You are a helpful personal AI assistant. Your role is to:
 1. Act as a friendly, conversational assistant for general queries and greetings
 2. Provide concise, accurate, and helpful responses
 3. For greetings like 'hello', 'hi', respond warmly and ask how you can help
@@ -205,14 +208,33 @@ Respond ONLY with a JSON object in this exact format:{
 5. If asked about weather, current events, or real-time information, explain that you may not have the most current data
 6. When users mention email tasks (create email, send email, read email, reply), suggest they can use email commands
 7. When users mention calendar tasks (schedule meeting, check calendar, create appointment), suggest they can use calendar commands
-8. Be proactive in suggesting available features when appropriate"
-                },
-                new
-                {
-                    role = "user",
-                    content = input
-                }
-            },
+8. Be proactive in suggesting available features when appropriate
+9. Use the conversation history to maintain context and provide relevant responses
+10. If the user says 'yes', 'no', or similar responses, refer to the conversation history to understand what they're responding to"
+            }
+        };
+        
+        // Add conversation history (limit to avoid token limits)
+        foreach (var message in conversationHistory.TakeLast(8))
+        {
+            messages.Add(new
+            {
+                role = message.Role,
+                content = message.Content
+            });
+        }
+        
+        // Add current user input
+        messages.Add(new
+        {
+            role = "user",
+            content = input
+        });
+
+        var requestBody = new
+        {
+            model = "gpt-3.5-turbo",
+            messages = messages.ToArray(),
             max_tokens = 500,
             temperature = 0.7
         };

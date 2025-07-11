@@ -34,7 +34,7 @@ public class AuthController : ControllerBase
         var properties = new AuthenticationProperties { RedirectUri = redirectUrl };
         
         // Request additional scopes for Gmail and Calendar
-        properties.Items["scope"] = "openid profile email https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/calendar.readonly";
+        properties.Items["scope"] = "openid profile email https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/calendar.readonly";
         
         return Challenge(properties, GoogleDefaults.AuthenticationScheme);
     }
@@ -236,6 +236,36 @@ public class AuthController : ControllerBase
         // Ensure user exists in database
         await EnsureUserExistsAsync(userId, email, name, provider);
         
+        // Extract and store OAuth tokens
+        string? accessToken = null;
+        string? refreshToken = null;
+        DateTime? tokenExpiresAt = null;
+        
+        if (properties.Items.TryGetValue(".Token.access_token", out accessToken) && !string.IsNullOrEmpty(accessToken))
+        {
+            // Store access token in database for background services
+        }
+        
+        if (properties.Items.TryGetValue(".Token.refresh_token", out refreshToken) && !string.IsNullOrEmpty(refreshToken))
+        {
+            // Store refresh token in database
+        }
+        
+        if (properties.Items.TryGetValue(".Token.expires_at", out var expiresAtStr) && !string.IsNullOrEmpty(expiresAtStr))
+        {
+            if (DateTime.TryParse(expiresAtStr, out var parsedExpiry))
+            {
+                tokenExpiresAt = parsedExpiry;
+            }
+        }
+        
+        // Save OAuth tokens to database for background email checking
+        if (!string.IsNullOrEmpty(accessToken))
+        {
+            await _userRepository.UpdateOAuthTokensAsync(userId, accessToken, refreshToken, tokenExpiresAt);
+            _logger.LogDebug("Stored OAuth tokens for user: {UserId}", userId);
+        }
+        
         var claims = new List<Claim>(principal.Claims)
         {
             new("provider", provider),
@@ -243,20 +273,20 @@ public class AuthController : ControllerBase
             new(JwtRegisteredClaimNames.Iat, DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString(), ClaimValueTypes.Integer64)
         };
 
-        // Add OAuth tokens if available
-        if (properties.Items.TryGetValue(".Token.access_token", out var accessToken) && !string.IsNullOrEmpty(accessToken))
+        // Add OAuth tokens to JWT claims for immediate use
+        if (!string.IsNullOrEmpty(accessToken))
         {
             claims.Add(new Claim("access_token", accessToken));
         }
         
-        if (properties.Items.TryGetValue(".Token.refresh_token", out var refreshToken) && !string.IsNullOrEmpty(refreshToken))
+        if (!string.IsNullOrEmpty(refreshToken))
         {
             claims.Add(new Claim("refresh_token", refreshToken));
         }
         
-        if (properties.Items.TryGetValue(".Token.expires_at", out var expiresAt) && !string.IsNullOrEmpty(expiresAt))
+        if (tokenExpiresAt.HasValue)
         {
-            claims.Add(new Claim("token_expiry", expiresAt));
+            claims.Add(new Claim("token_expiry", tokenExpiresAt.Value.ToString("O")));
         }
 
         // Add scopes
@@ -320,7 +350,7 @@ public class AuthController : ControllerBase
         {
             "google" => new List<string>
             {
-                "https://www.googleapis.com/auth/gmail.readonly",
+                "https://www.googleapis.com/auth/gmail.modify",
                 "https://www.googleapis.com/auth/calendar.readonly"
             },
             "microsoft" => new List<string>

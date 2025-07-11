@@ -7,7 +7,25 @@ var options = new DbContextOptionsBuilder<ApplicationDbContext>()
 
 using var context = new ApplicationDbContext(options);
 
-Console.WriteLine("=== CURRENT STATE ===");
+Console.WriteLine("=== CHECKING USERS ===");
+// Check users in the database
+var users = context.Users.ToList();
+
+Console.WriteLine($"Found {users.Count} users in database:");
+foreach (var user in users)
+{
+    Console.WriteLine($"  UserId: {user.UserId}");
+    Console.WriteLine($"  Email: {user.Email}");
+    Console.WriteLine($"  Name: {user.Name}");
+    Console.WriteLine($"  Provider: {user.Provider}");
+    Console.WriteLine($"  HasAccessToken: {!string.IsNullOrEmpty(user.AccessToken)}");
+    Console.WriteLine($"  TokenExpiresAt: {user.TokenExpiresAt}");
+    Console.WriteLine($"  IsActive: {user.IsActive}");
+    Console.WriteLine($"  CreatedAt: {user.CreatedAt}");
+    Console.WriteLine("  ---");
+}
+
+Console.WriteLine("\n=== CURRENT STATE ===");
 // Show current data using Entity Framework
 var subscriptions = context.UserModuleSubscriptions.ToList();
 var modules = context.Modules.ToList();
