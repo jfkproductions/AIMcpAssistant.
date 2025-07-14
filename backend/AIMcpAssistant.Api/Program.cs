@@ -79,6 +79,9 @@ builder.Services.AddScoped<AIMcpAssistant.Data.Interfaces.IUnitOfWork, AIMcpAssi
 // Register core services
 builder.Services.AddSingleton<ICommandDispatcher, CommandDispatcher>();
 builder.Services.AddScoped<AIMcpAssistant.Core.Services.IConversationContextService, AIMcpAssistant.Core.Services.ConversationContextService>();
+builder.Services.AddScoped<ITokenRefreshService, TokenRefreshService>();
+builder.Services.AddScoped<TokenRefreshService>();
+builder.Services.AddScoped<IEncryptionService, EncryptionService>();
 
 // Register individual MCPs manually for more control
 builder.Services.AddScoped<EmailMcp>();

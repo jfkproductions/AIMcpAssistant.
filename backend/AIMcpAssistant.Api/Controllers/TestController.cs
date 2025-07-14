@@ -9,6 +9,7 @@ using AIMcpAssistant.Data.Repositories;
 using AIMcpAssistant.MCPs;
 using AIMcpAssistant.Core.Services;
 using AIMcpAssistant.Data.Interfaces;
+using AIMcpAssistant.Core.Interfaces;
 
 namespace AIMcpAssistant.Api.Controllers
 {
@@ -23,12 +24,12 @@ namespace AIMcpAssistant.Api.Controllers
     private readonly EmailMcp _emailMcp;
     private readonly IUserRepository _userRepository;
 
-    public TestController(IHubContext<NotificationHub> hubContext, ILogger<TestController> logger, UserModuleSubscriptionRepository subscriptionRepository, ILogger<EmailMcp> emailMcpLogger, IConversationContextService conversationContextService, IUserRepository userRepository)
+    public TestController(IHubContext<NotificationHub> hubContext, ILogger<TestController> logger, UserModuleSubscriptionRepository subscriptionRepository, ILogger<EmailMcp> emailMcpLogger, IConversationContextService conversationContextService, IUserRepository userRepository, TokenRefreshService tokenRefreshService)
     {
         _hubContext = hubContext;
         _logger = logger;
         _subscriptionRepository = subscriptionRepository;
-        _emailMcp = new EmailMcp(emailMcpLogger, conversationContextService);
+        _emailMcp = new EmailMcp(emailMcpLogger, conversationContextService, tokenRefreshService);
         _userRepository = userRepository;
     }
 

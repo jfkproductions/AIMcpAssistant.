@@ -1,5 +1,6 @@
 using AIMcpAssistant.Core.Models;
 using AIMcpAssistant.Core.Services;
+using AIMcpAssistant.Core.Interfaces;
 using Microsoft.Extensions.Logging;
 using Microsoft.Graph;
 using Microsoft.Graph.Me.Messages.Item.Reply;
@@ -23,6 +24,7 @@ public class EmailMcp : BaseMcpModule
     private readonly Dictionary<string, string> _pendingConfirmations = new();
     private readonly Dictionary<string, CancellationTokenSource> _readingCancellationTokens = new();
     private readonly IConversationContextService _conversationContextService;
+    private readonly TokenRefreshService _tokenRefreshService;
     public override string Id => "email";
     public override string Name => "Email Manager";
     public override string Description => "Manage emails from Google Gmail and Microsoft Outlook";
@@ -39,9 +41,10 @@ public class EmailMcp : BaseMcpModule
         "search emails", "find emails", "look for emails"
     };
 
-    public EmailMcp(ILogger<EmailMcp> logger, IConversationContextService conversationContextService) : base(logger) 
+    public EmailMcp(ILogger<EmailMcp> logger, IConversationContextService conversationContextService, TokenRefreshService tokenRefreshService) : base(logger) 
     {
         _conversationContextService = conversationContextService;
+        _tokenRefreshService = tokenRefreshService;
     }
 
     public override async Task<double> CanHandleAsync(string input, UserContext context)
@@ -255,7 +258,13 @@ public class EmailMcp : BaseMcpModule
         {
             if (context.Provider == "Google")
             {
-                var credential = GoogleCredential.FromAccessToken(context.AccessToken);
+                var accessToken = await _tokenRefreshService.GetValidAccessTokenAsync(context.UserId);
+                if (string.IsNullOrEmpty(accessToken))
+                {
+                    return Error("Unable to access Gmail. Please re-authenticate.");
+                }
+                
+                var credential = GoogleCredential.FromAccessToken(accessToken);
                 var service = new GmailService(new BaseClientService.Initializer()
                 {
                     HttpClientInitializer = credential
@@ -273,7 +282,13 @@ public class EmailMcp : BaseMcpModule
             }
             else if (context.Provider == "Microsoft")
             {
-                var graphClient = GetGraphServiceClient(context.AccessToken);
+                var accessToken = await _tokenRefreshService.GetValidAccessTokenAsync(context.UserId);
+                if (string.IsNullOrEmpty(accessToken))
+                {
+                    return Error("Unable to access Outlook. Please re-authenticate.");
+                }
+                
+                var graphClient = GetGraphServiceClient(accessToken);
                 
                 await graphClient.Me.Messages[emailId].Move.PostAsync(new Microsoft.Graph.Me.Messages.Item.Move.MovePostRequestBody
                 {
@@ -478,7 +493,13 @@ public class EmailMcp : BaseMcpModule
     {
         if (context.Provider.Equals("Google", StringComparison.OrdinalIgnoreCase))
         {
-            var credential = GoogleCredential.FromAccessToken(context.AccessToken);
+            var accessToken = await _tokenRefreshService.GetValidAccessTokenAsync(context.UserId);
+            if (string.IsNullOrEmpty(accessToken))
+            {
+                return (0, 0);
+            }
+            
+            var credential = GoogleCredential.FromAccessToken(accessToken);
             var service = new GmailService(new BaseClientService.Initializer() { HttpClientInitializer = credential });
             var profile = await service.Users.GetProfile("me").ExecuteAsync();
             var labels = await service.Users.Labels.Get("me", "INBOX").ExecuteAsync();
@@ -486,7 +507,13 @@ public class EmailMcp : BaseMcpModule
         }
         else if (context.Provider.Equals("Microsoft", StringComparison.OrdinalIgnoreCase))
         {
-            var graphClient = GetGraphServiceClient(context.AccessToken);
+            var accessToken = await _tokenRefreshService.GetValidAccessTokenAsync(context.UserId);
+            if (string.IsNullOrEmpty(accessToken))
+            {
+                return (0, 0);
+            }
+            
+            var graphClient = GetGraphServiceClient(accessToken);
             var inbox = await graphClient.Me.MailFolders["Inbox"].GetAsync();
             return (inbox.TotalItemCount ?? 0, inbox.UnreadItemCount ?? 0);
         }
@@ -537,7 +564,13 @@ public class EmailMcp : BaseMcpModule
         
         try
         {
-            var credential = GoogleCredential.FromAccessToken(context.AccessToken);
+            var accessToken = await _tokenRefreshService.GetValidAccessTokenAsync(context.UserId);
+            if (string.IsNullOrEmpty(accessToken))
+            {
+                return Error("Unable to access Gmail. Please re-authenticate.");
+            }
+            
+            var credential = GoogleCredential.FromAccessToken(accessToken);
             var service = new GmailService(new BaseClientService.Initializer()
             {
                 HttpClientInitializer = credential
@@ -604,7 +637,13 @@ public class EmailMcp : BaseMcpModule
         
         try
         {
-            var graphClient = GetGraphServiceClient(context.AccessToken);
+            var accessToken = await _tokenRefreshService.GetValidAccessTokenAsync(context.UserId);
+            if (string.IsNullOrEmpty(accessToken))
+            {
+                return Error("Unable to access Outlook. Please re-authenticate.");
+            }
+            
+            var graphClient = GetGraphServiceClient(accessToken);
 
             var messages = await graphClient.Me.Messages
                 .GetAsync(requestConfiguration =>
@@ -817,7 +856,13 @@ public class EmailMcp : BaseMcpModule
 
     private async Task<McpResponse> ReadGmailEmailsAsync(UserContext context, int count, bool onlyUnread)
     {
-        var credential = GoogleCredential.FromAccessToken(context.AccessToken);
+        var accessToken = await _tokenRefreshService.GetValidAccessTokenAsync(context.UserId);
+        if (string.IsNullOrEmpty(accessToken))
+        {
+            return Error("Unable to access Gmail. Please re-authenticate.");
+        }
+        
+        var credential = GoogleCredential.FromAccessToken(accessToken);
         var service = new GmailService(new BaseClientService.Initializer()
         {
             HttpClientInitializer = credential
@@ -861,7 +906,13 @@ public class EmailMcp : BaseMcpModule
 
     private async Task<McpResponse> ReadOutlookEmailsAsync(UserContext context, int count, bool onlyUnread)
     {
-        var graphClient = GetGraphServiceClient(context.AccessToken);
+        var accessToken = await _tokenRefreshService.GetValidAccessTokenAsync(context.UserId);
+        if (string.IsNullOrEmpty(accessToken))
+        {
+            return Error("Unable to access Outlook. Please re-authenticate.");
+        }
+        
+        var graphClient = GetGraphServiceClient(accessToken);
 
         var messages = await graphClient.Me.Messages
             .GetAsync(requestConfiguration =>

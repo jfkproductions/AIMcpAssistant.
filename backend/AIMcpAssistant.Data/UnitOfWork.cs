@@ -1,4 +1,5 @@
-using AIMcpAssistant.Data.Interfaces;
+using AIMcpAssistant.Core.Interfaces;
+using AIMcpAssistant.Core.Services;
 using AIMcpAssistant.Data.Repositories;
 using Microsoft.EntityFrameworkCore.Storage;
 
@@ -18,8 +19,15 @@ public class UnitOfWork : IUnitOfWork
         _context = context;
     }
 
-    public IUserRepository Users => _users ??= new UserRepository(_context);
-    public ICommandHistoryRepository CommandHistories => _commandHistories ??= new CommandHistoryRepository(_context);
+        public IUserRepository Users { get; }
+    public ICommandHistoryRepository CommandHistories { get; }
+
+    public UnitOfWork(ApplicationDbContext context, IEncryptionService encryptionService)
+    {
+        _context = context;
+        Users = new UserRepository(context, encryptionService);
+        CommandHistories = new CommandHistoryRepository(context);
+    }
 
     public async Task<int> SaveChangesAsync()
     {

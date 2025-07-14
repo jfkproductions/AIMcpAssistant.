@@ -111,7 +111,8 @@ public class EmailNotificationService : BackgroundService
             // Create EmailMcp instance to check for new emails
             var emailMcpLogger = scope.ServiceProvider.GetRequiredService<ILogger<EmailMcp>>();
             var conversationContextService = scope.ServiceProvider.GetRequiredService<IConversationContextService>();
-            var emailMcp = new EmailMcp(emailMcpLogger, conversationContextService);
+            var tokenRefreshService = scope.ServiceProvider.GetRequiredService<TokenRefreshService>();
+            var emailMcp = new EmailMcp(emailMcpLogger, conversationContextService, tokenRefreshService);
             
             // Get recent emails (last 10 emails)
             var context = new UserContext

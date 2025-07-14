@@ -12,4 +12,8 @@
     <PackageReference Include="Microsoft.AspNetCore.Authentication.MicrosoftAccount" Version="8.0.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\AIMcpAssistant.Core\AIMcpAssistant.Core.csproj" />
+  </ItemGroup>
+
 </Project>

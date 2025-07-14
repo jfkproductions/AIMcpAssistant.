@@ -1,5 +1,7 @@
 using AIMcpAssistant.Authentication.Interfaces;
 using AIMcpAssistant.Authentication.Services;
+using AIMcpAssistant.Core.Interfaces;
+using AIMcpAssistant.Core.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -20,6 +22,10 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IGoogleAuthenticationProvider, GoogleAuthenticationProvider>();
         services.AddScoped<IMicrosoftAuthenticationProvider, MicrosoftAuthenticationProvider>();
         services.AddScoped<IAuthenticationService, AuthenticationService>();
+        
+        // Register token services
+        services.AddScoped<ITokenStorageService, TokenStorageService>();
+        services.AddScoped<ITokenRefreshService, TokenRefreshService>();
 
         // Configure JWT authentication
         var jwtKey = configuration["Jwt:Key"] ?? throw new InvalidOperationException("JWT Key not configured");

@@ -18,6 +18,7 @@
     <PackageReference Include="Microsoft.Graph" Version="5.85.0" />
     <PackageReference Include="Google.Apis.Gmail.v1" Version="1.68.0.3421" />
     <PackageReference Include="Google.Apis.Calendar.v3" Version="1.68.0.3530" />
+    <PackageReference Include="Google.Apis.Auth" Version="1.68.0" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="6.5.0" />
     <PackageReference Include="Scrutor" Version="4.2.2" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />

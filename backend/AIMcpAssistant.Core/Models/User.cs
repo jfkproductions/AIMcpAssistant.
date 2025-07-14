@@ -1,6 +1,7 @@
 using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations.Schema;
 
-namespace AIMcpAssistant.Data.Entities;
+namespace AIMcpAssistant.Core.Models;
 
 public class User
 {
@@ -29,14 +30,23 @@ public class User
     
     public bool IsActive { get; set; } = true;
     
-    // OAuth token storage for background services
-    [MaxLength(2000)]
-    public string? AccessToken { get; set; }
+    // OAuth token storage for background services - encrypted in database
+    [MaxLength(4000)] // Increased size for encrypted data
+    [Column("AccessTokenEncrypted")]
+    public string? AccessTokenEncrypted { get; set; }
     
-    [MaxLength(2000)]
-    public string? RefreshToken { get; set; }
+    [MaxLength(4000)] // Increased size for encrypted data
+    [Column("RefreshTokenEncrypted")]
+    public string? RefreshTokenEncrypted { get; set; }
     
     public DateTime? TokenExpiresAt { get; set; }
+    
+    // Non-mapped properties for plain text access
+    [NotMapped]
+    public string? AccessToken { get; set; }
+    
+    [NotMapped]
+    public string? RefreshToken { get; set; }
     
     // Navigation properties
     public virtual ICollection<CommandHistory> CommandHistories { get; set; } = new List<CommandHistory>();

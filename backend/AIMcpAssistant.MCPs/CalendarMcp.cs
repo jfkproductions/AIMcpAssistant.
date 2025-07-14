@@ -1,5 +1,6 @@
 using AIMcpAssistant.Core.Models;
 using AIMcpAssistant.Core.Services;
+using AIMcpAssistant.Core.Interfaces;
 using Microsoft.Extensions.Logging;
 using Microsoft.Graph;
 
@@ -14,6 +15,8 @@ namespace AIMcpAssistant.MCPs;
 
 public class CalendarMcp : BaseMcpModule
 {
+    private readonly ITokenRefreshService _tokenRefreshService;
+    
     public override string Id => "calendar";
     public override string Name => "Calendar Manager";
     public override string Description => "Manage calendar events from Google Calendar and Microsoft Outlook";
@@ -30,7 +33,10 @@ public class CalendarMcp : BaseMcpModule
         "next meeting", "upcoming events", "what's next"
     };
 
-    public CalendarMcp(ILogger<CalendarMcp> logger) : base(logger) { }
+    public CalendarMcp(ILogger<CalendarMcp> logger, ITokenRefreshService tokenRefreshService) : base(logger) 
+    {
+        _tokenRefreshService = tokenRefreshService;
+    }
 
     public override async Task<double> CanHandleAsync(string input, UserContext context)
     {
@@ -164,7 +170,13 @@ public class CalendarMcp : BaseMcpModule
 
     private async Task<McpResponse> ViewGoogleCalendarAsync(UserContext context, DateTime start, DateTime end)
     {
-        var credential = GoogleCredential.FromAccessToken(context.AccessToken);
+        var accessToken = await _tokenRefreshService.GetValidAccessTokenAsync(context.UserId);
+        if (string.IsNullOrEmpty(accessToken))
+        {
+            return Error("Unable to access Google Calendar. Please re-authenticate.");
+        }
+        
+        var credential = GoogleCredential.FromAccessToken(accessToken);
         var service = new CalendarService(new BaseClientService.Initializer()
         {
             HttpClientInitializer = credential
@@ -203,8 +215,14 @@ public class CalendarMcp : BaseMcpModule
 
     private async Task<McpResponse> ViewOutlookCalendarAsync(UserContext context, DateTime start, DateTime end)
     {
+        var accessToken = await _tokenRefreshService.GetValidAccessTokenAsync(context.UserId);
+        if (string.IsNullOrEmpty(accessToken))
+        {
+            return Error("Unable to access Outlook Calendar. Please re-authenticate.");
+        }
+        
         var httpClient = new HttpClient();
-        httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", context.AccessToken);
+        httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
         var graphClient = new GraphServiceClient(httpClient);
 
         var events = await graphClient.Me.Calendar.Events
@@ -281,7 +299,13 @@ public class CalendarMcp : BaseMcpModule
 
     private async Task<McpResponse> GetNextGoogleEventAsync(UserContext context, DateTime start, DateTime end)
     {
-        var credential = GoogleCredential.FromAccessToken(context.AccessToken);
+        var accessToken = await _tokenRefreshService.GetValidAccessTokenAsync(context.UserId);
+        if (string.IsNullOrEmpty(accessToken))
+        {
+            return Error("Unable to access Google Calendar. Please re-authenticate.");
+        }
+        
+        var credential = GoogleCredential.FromAccessToken(accessToken);
         var service = new CalendarService(new BaseClientService.Initializer()
         {
             HttpClientInitializer = credential
@@ -316,8 +340,14 @@ public class CalendarMcp : BaseMcpModule
 
     private async Task<McpResponse> GetNextOutlookEventAsync(UserContext context, DateTime start, DateTime end)
     {
+        var accessToken = await _tokenRefreshService.GetValidAccessTokenAsync(context.UserId);
+        if (string.IsNullOrEmpty(accessToken))
+        {
+            return Error("Unable to access Outlook Calendar. Please re-authenticate.");
+        }
+        
         var httpClient = new HttpClient();
-        httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", context.AccessToken);
+        httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
         var graphClient = new GraphServiceClient(httpClient);
 
         var events = await graphClient.Me.Calendar.Events

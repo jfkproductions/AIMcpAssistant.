@@ -8,6 +8,16 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Remove="AddTestData.cs" />
+    <Compile Remove="CheckCurrentUsers.cs" />
+    <Compile Remove="CheckUsers.cs" />
+    <Compile Remove="FixDatabase.cs" />
+    <Compile Remove="InitializeDb.cs" />
+    <Compile Remove="Program.cs" />
+    <Compile Remove="QueryDb.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="8.0.0" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.0" />
   </ItemGroup>
