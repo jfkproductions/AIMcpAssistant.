@@ -1,7 +1,9 @@
 using AIMcpAssistant.Data;
 using AIMcpAssistant.Data.Entities;
+using AIMcpAssistant.Data.Interfaces;
 using AIMcpAssistant.Data.Repositories;
 using Microsoft.EntityFrameworkCore;
+using Moq;
 using Xunit;
 
 namespace AIMcpAssistant.Tests.Data;
@@ -10,6 +12,7 @@ public class UserRepositoryTests : IDisposable
 {
     private readonly ApplicationDbContext _context;
     private readonly UserRepository _repository;
+    private readonly Mock<IEncryptionService> _mockEncryptionService;
 
     public UserRepositoryTests()
     {
@@ -18,7 +21,8 @@ public class UserRepositoryTests : IDisposable
             .Options;
 
         _context = new ApplicationDbContext(options);
-        _repository = new UserRepository(_context);
+        _mockEncryptionService = new Mock<IEncryptionService>();
+        _repository = new UserRepository(_context, _mockEncryptionService.Object);
     }
 
     [Fact]

@@ -1,6 +1,5 @@
-using AIMcpAssistant.Core.Interfaces;
-using AIMcpAssistant.Core.Models;
-using AIMcpAssistant.Core.Interfaces;
+using AIMcpAssistant.Data.Entities;
+using AIMcpAssistant.Data.Interfaces;
 using Microsoft.EntityFrameworkCore;
 
 namespace AIMcpAssistant.Data.Repositories;

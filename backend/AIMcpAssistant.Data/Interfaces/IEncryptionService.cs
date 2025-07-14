@@ -1,4 +1,4 @@
-namespace AIMcpAssistant.Core.Interfaces;
+namespace AIMcpAssistant.Data.Interfaces;
 
 public interface IEncryptionService
 {

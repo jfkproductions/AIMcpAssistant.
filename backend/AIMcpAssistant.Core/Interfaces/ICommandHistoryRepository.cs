@@ -1,4 +1,4 @@
-using AIMcpAssistant.Core.Models;
+using AIMcpAssistant.Data.Entities;
 
 namespace AIMcpAssistant.Core.Interfaces;
 

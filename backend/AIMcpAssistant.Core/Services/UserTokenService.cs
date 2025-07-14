@@ -1,18 +1,19 @@
 using AIMcpAssistant.Core.Interfaces;
-using AIMcpAssistant.Core.Models;
+using AIMcpAssistant.Data.Entities;
+using AIMcpAssistant.Data.Interfaces;
 using Microsoft.Extensions.Logging;
 
 namespace AIMcpAssistant.Core.Services;
 
 public class UserTokenService : IUserTokenService
 {
-    private readonly IUnitOfWork _unitOfWork;
-    private readonly IEncryptionService _encryptionService;
+    private readonly Data.Interfaces.IUnitOfWork _unitOfWork;
+    private readonly Data.Interfaces.IEncryptionService _encryptionService;
     private readonly ILogger<UserTokenService> _logger;
 
     public UserTokenService(
-        IUnitOfWork unitOfWork,
-        IEncryptionService encryptionService,
+        Data.Interfaces.IUnitOfWork unitOfWork,
+        Data.Interfaces.IEncryptionService encryptionService,
         ILogger<UserTokenService> logger)
     {
         _unitOfWork = unitOfWork;
@@ -149,6 +150,130 @@ public class UserTokenService : IUserTokenService
         if (!string.IsNullOrEmpty(user.RefreshTokenEncrypted))
         {
             user.RefreshToken = _encryptionService.Decrypt(user.RefreshTokenEncrypted);
+        }
+        
+        if (!string.IsNullOrEmpty(user.JwtTokenEncrypted))
+        {
+            user.JwtToken = _encryptionService.Decrypt(user.JwtTokenEncrypted);
+        }
+    }
+
+    // JWT Token Methods
+    public async Task SaveJwtTokenAsync(string userId, string jwtToken, DateTime expiresAt)
+    {
+        try
+        {
+            var user = await _unitOfWork.Users.GetByUserIdAsync(userId);
+            if (user == null)
+            {
+                _logger.LogWarning("User not found when saving JWT token: {UserId}", userId);
+                return;
+            }
+
+            // Set plain text JWT token
+            user.JwtToken = jwtToken;
+            user.JwtTokenExpiresAt = expiresAt;
+
+            // Encrypt JWT token before saving
+            EncryptJwtToken(user);
+
+            await _unitOfWork.Users.UpdateAsync(user);
+            await _unitOfWork.SaveChangesAsync();
+
+            _logger.LogInformation("JWT token saved successfully for user: {UserId}", userId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error saving JWT token for user: {UserId}", userId);
+            throw;
+        }
+    }
+
+    public async Task<(string? jwtToken, DateTime? expiresAt)> GetJwtTokenAsync(string userId)
+    {
+        try
+        {
+            var user = await _unitOfWork.Users.GetByUserIdAsync(userId);
+            if (user == null)
+            {
+                _logger.LogWarning("User not found when getting JWT token: {UserId}", userId);
+                return (null, null);
+            }
+
+            // Decrypt JWT token after loading
+            DecryptJwtToken(user);
+
+            return (user.JwtToken, user.JwtTokenExpiresAt);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting JWT token for user: {UserId}", userId);
+            return (null, null);
+        }
+    }
+
+    public async Task<bool> IsJwtTokenValidAsync(string userId)
+    {
+        try
+        {
+            var (jwtToken, expiresAt) = await GetJwtTokenAsync(userId);
+            
+            if (string.IsNullOrEmpty(jwtToken) || !expiresAt.HasValue)
+                return false;
+
+            // Check if JWT token is expired (with 5 minute buffer)
+            return expiresAt.Value > DateTime.UtcNow.AddMinutes(5);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error checking JWT token validity for user: {UserId}", userId);
+            return false;
+        }
+    }
+
+    public async Task ClearJwtTokenAsync(string userId)
+    {
+        try
+        {
+            var user = await _unitOfWork.Users.GetByUserIdAsync(userId);
+            if (user == null)
+            {
+                _logger.LogWarning("User not found when clearing JWT token: {UserId}", userId);
+                return;
+            }
+
+            user.JwtTokenEncrypted = null;
+            user.JwtTokenExpiresAt = null;
+            user.JwtToken = null;
+
+            await _unitOfWork.Users.UpdateAsync(user);
+            await _unitOfWork.SaveChangesAsync();
+
+            _logger.LogInformation("JWT token cleared for user: {UserId}", userId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error clearing JWT token for user: {UserId}", userId);
+            throw;
+        }
+    }
+
+    private void EncryptJwtToken(User user)
+    {
+        if (!string.IsNullOrEmpty(user.JwtToken))
+        {
+            user.JwtTokenEncrypted = _encryptionService.Encrypt(user.JwtToken);
+        }
+
+        // Clear plain text JWT token after encryption
+        user.JwtToken = null;
+    }
+
+    private void DecryptJwtToken(User user)
+    {
+        if (!string.IsNullOrEmpty(user.JwtTokenEncrypted))
+        {
+            user.JwtToken = _encryptionService.Decrypt(user.JwtTokenEncrypted);
         }
     }
 }

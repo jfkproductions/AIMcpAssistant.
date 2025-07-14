@@ -1,7 +1,7 @@
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 
-namespace AIMcpAssistant.Core.Models;
+namespace AIMcpAssistant.Data.Entities;
 
 public class User
 {
@@ -41,12 +41,22 @@ public class User
     
     public DateTime? TokenExpiresAt { get; set; }
     
+    // JWT Authentication token storage - encrypted in database
+    [MaxLength(4000)] // Increased size for encrypted JWT data
+    [Column("JwtTokenEncrypted")]
+    public string? JwtTokenEncrypted { get; set; }
+    
+    public DateTime? JwtTokenExpiresAt { get; set; }
+    
     // Non-mapped properties for plain text access
     [NotMapped]
     public string? AccessToken { get; set; }
     
     [NotMapped]
     public string? RefreshToken { get; set; }
+    
+    [NotMapped]
+    public string? JwtToken { get; set; }
     
     // Navigation properties
     public virtual ICollection<CommandHistory> CommandHistories { get; set; } = new List<CommandHistory>();

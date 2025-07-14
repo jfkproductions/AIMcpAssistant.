@@ -1,17 +1,16 @@
 using AIMcpAssistant.Core.Interfaces;
-
 using Microsoft.Extensions.Logging;
 
 namespace AIMcpAssistant.Core.Services;
 
 public class TokenStorageService : ITokenStorageService
 {
-    private readonly IUserRepository _userRepository;
+    private readonly IUserTokenService _userTokenService;
     private readonly ILogger<TokenStorageService> _logger;
 
-    public TokenStorageService(IUserRepository userRepository, ILogger<TokenStorageService> logger)
+    public TokenStorageService(IUserTokenService userTokenService, ILogger<TokenStorageService> logger)
     {
-        _userRepository = userRepository;
+        _userTokenService = userTokenService;
         _logger = logger;
     }
 
@@ -19,7 +18,10 @@ public class TokenStorageService : ITokenStorageService
     {
         try
         {
-            await _userRepository.UpdateOAuthTokensAsync(userId, accessToken, refreshToken, expiresAt);
+            if (refreshToken != null && expiresAt.HasValue)
+            {
+                await _userTokenService.SaveUserTokensAsync(userId, accessToken, refreshToken, expiresAt.Value);
+            }
             _logger.LogDebug("Saved OAuth tokens for user: {UserId}", userId);
         }
         catch (Exception ex)
@@ -33,8 +35,8 @@ public class TokenStorageService : ITokenStorageService
     {
         try
         {
-            var user = await _userRepository.GetByUserIdAsync(userId);
-            if (user == null || string.IsNullOrEmpty(user.AccessToken))
+            var tokens = await _userTokenService.GetUserTokensAsync(userId);
+            if (tokens.accessToken == null)
             {
                 _logger.LogDebug("No tokens found for user: {UserId}", userId);
                 return null;
@@ -42,11 +44,11 @@ public class TokenStorageService : ITokenStorageService
 
             return new AuthTokens
             {
-                AccessToken = user.AccessToken,
-                RefreshToken = user.RefreshToken,
-                ExpiresAt = user.TokenExpiresAt,
-                Provider = user.Provider ?? "Unknown",
-                Scopes = GetScopesForProvider(user.Provider ?? "Unknown")
+                AccessToken = tokens.accessToken,
+                RefreshToken = tokens.refreshToken,
+                ExpiresAt = tokens.expiresAt,
+                Provider = "Unknown", // Provider info not available from IUserTokenService
+                Scopes = new List<string>() // Scopes not available from IUserTokenService
             };
         }
         catch (Exception ex)
@@ -60,10 +62,12 @@ public class TokenStorageService : ITokenStorageService
     {
         try
         {
-            var user = await _userRepository.GetByUserIdAsync(userId);
-            if (user != null)
+            var existingTokens = await _userTokenService.GetUserTokensAsync(userId);
+            if (existingTokens.accessToken != null)
             {
-                await _userRepository.UpdateOAuthTokensAsync(userId, accessToken, user.RefreshToken, expiresAt);
+                var refreshToken = existingTokens.refreshToken ?? string.Empty;
+                var expiry = expiresAt ?? existingTokens.expiresAt ?? DateTime.UtcNow.AddHours(1);
+                await _userTokenService.SaveUserTokensAsync(userId, accessToken, refreshToken, expiry);
                 _logger.LogDebug("Updated access token for user: {UserId}", userId);
             }
             else
@@ -82,7 +86,7 @@ public class TokenStorageService : ITokenStorageService
     {
         try
         {
-            await _userRepository.UpdateOAuthTokensAsync(userId, accessToken, refreshToken, expiresAt);
+            await _userTokenService.SaveUserTokensAsync(userId, accessToken, refreshToken, expiresAt);
             _logger.LogDebug("Updated both access and refresh tokens for user: {UserId}", userId);
         }
         catch (Exception ex)
@@ -96,7 +100,7 @@ public class TokenStorageService : ITokenStorageService
     {
         try
         {
-            await _userRepository.UpdateOAuthTokensAsync(userId, null, null, null);
+            await _userTokenService.ClearUserTokensAsync(userId);
             _logger.LogDebug("Removed OAuth tokens for user: {UserId}", userId);
         }
         catch (Exception ex)
@@ -110,8 +114,7 @@ public class TokenStorageService : ITokenStorageService
     {
         try
         {
-            var tokens = await GetTokensAsync(userId);
-            return tokens != null && !string.IsNullOrEmpty(tokens.AccessToken) && !tokens.IsExpired;
+            return await _userTokenService.IsTokenValidAsync(userId);
         }
         catch (Exception ex)
         {

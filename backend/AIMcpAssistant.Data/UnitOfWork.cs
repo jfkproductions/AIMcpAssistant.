@@ -1,5 +1,4 @@
-using AIMcpAssistant.Core.Interfaces;
-using AIMcpAssistant.Core.Services;
+using AIMcpAssistant.Data.Interfaces;
 using AIMcpAssistant.Data.Repositories;
 using Microsoft.EntityFrameworkCore.Storage;
 
@@ -11,15 +10,7 @@ public class UnitOfWork : IUnitOfWork
     private IDbContextTransaction? _transaction;
     private bool _disposed = false;
 
-    private IUserRepository? _users;
-    private ICommandHistoryRepository? _commandHistories;
-
-    public UnitOfWork(ApplicationDbContext context)
-    {
-        _context = context;
-    }
-
-        public IUserRepository Users { get; }
+    public IUserRepository Users { get; }
     public ICommandHistoryRepository CommandHistories { get; }
 
     public UnitOfWork(ApplicationDbContext context, IEncryptionService encryptionService)

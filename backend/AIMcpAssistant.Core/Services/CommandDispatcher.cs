@@ -1,7 +1,7 @@
 using AIMcpAssistant.Core.Interfaces;
 using AIMcpAssistant.Core.Models;
+using AIMcpAssistant.Data.Entities;
 using Microsoft.Extensions.Logging;
-
 using Microsoft.Extensions.DependencyInjection;
 
 namespace AIMcpAssistant.Core.Services;

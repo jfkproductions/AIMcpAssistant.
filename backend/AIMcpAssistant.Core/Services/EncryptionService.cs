@@ -1,4 +1,4 @@
-using AIMcpAssistant.Core.Interfaces;
+using AIMcpAssistant.Data.Interfaces;
 using Microsoft.Extensions.Configuration;
 using System;
 using System.IO;
